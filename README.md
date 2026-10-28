@@ -21,6 +21,6 @@ The files are presented in the order in which they were run for the study:
 
 A [Data Dictionary](https://github.com/emily-j-f/PERS/tree/main/Data%20Dictionary) is available to assist with interpreting the code and understanding the variables used in the study.
 
-PDF outputs from the R analyses, including multiple imputation diagnostics, can be found in the [R PDF Outputs](https://github.com/emily-j-f/PERS/tree/main/R%20PDF%20Outputs) folder. And the data collection tools (surveys) can be found in the [Survey PDFs](https://github.com/emily-j-f/PERS/tree/main/Survey%20PDFs%) folder.
+PDF outputs from the R analyses, including multiple imputation diagnostics, can be found in the [R Output PDFs](https://github.com/emily-j-f/PERS/tree/main/R%20Output%20PDFs) folder. And the data collection tools (surveys) can be found in the [Survey PDFs](https://github.com/emily-j-f/PERS/tree/main/Survey%20PDFs) folder.
 
 
