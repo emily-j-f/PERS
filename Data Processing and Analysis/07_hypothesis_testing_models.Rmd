@@ -1,0 +1,682 @@
+---
+title: "Puberty & emotional reactivity study main analysis"
+author: "Emily Friedel"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+### Load libraries
+
+```{r libraries}
+library(tidyverse)
+library(mice)
+library(brms)
+library(posterior)
+library(bayestestR)
+library(emmeans)
+library(rstan)
+library(tidybayes)
+library(knitr)
+library(priorsense)
+library(loo)
+library(bayesplot)
+library(here)
+```
+
+### Import saved imputed dfs
+
+```{r import-data}
+analytic_dfs <- readRDS(here("Imputed Data", "analytic_dfs.rds"))
+```
+
+### Initial checks
+
+```{r initial-checks}
+length(analytic_dfs)
+sapply(analytic_dfs, nrow) %>% 
+  unique()
+str(analytic_dfs[[1]])
+```
+
+### Create folders
+
+```{r folders}
+dir.create(here("Main Models"), showWarnings = FALSE)
+```
+
+## 1. Set up hypothesis formulas and priors
+
+```{r hypothesis-formulas-priors}
+# Formulas
+formula_h1 <- bf(ers_total_s ~ pds_total_s * adhd_status
+                 + age_cont_s + sed_percentile_s)
+
+formula_h2 <- bf(ers_total_s ~ pubertal_timing_s * adhd_status
+                 + sed_percentile_s)
+
+formula_h1_nointeract <- bf(ers_total_s ~ pds_total_s + adhd_status
+                            + age_cont_s + sed_percentile_s)
+
+# Specify priors
+priors <- c(
+  prior(normal(0, 1), class = "b", tag = "b"),
+  prior(normal(0, 1), class = "Intercept", tag = "intercept"),
+  prior(exponential(1), class = "sigma", tag = "sigma")
+)
+```
+
+## 2. Run models
+
+### H1 Model
+
+```{r H1-model}
+fit_h1 <- brm_multiple(
+  formula = formula_h1,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors,   
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,
+  save_pars = save_pars(all = TRUE),
+  seed = 12345
+)
+
+saveRDS(fit_h1, here("Main Models", "fit_h1.rds"))
+```
+
+### H1 Model output
+
+```{r H1-output}
+bayes_R2(fit_h1)
+
+# Compute pd and ROPE
+effect_h1 <- describe_posterior(
+  fit_h1,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h1 <- effect_h1 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h1 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H1 Model diagnostics and PP checks
+
+```{r H1-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h1) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== R-hat & ESS for log posterior density ===\n")
+draws <- as_draws_array(fit_h1)
+
+chains_per_imp <- 4
+n_imp          <- nchains(draws) / chains_per_imp
+n_imp
+
+lp_by_imp <- lapply(seq_len(n_imp), function(i) {
+  chains_i <- ((i - 1) * chains_per_imp + 1):(i * chains_per_imp)
+  subset_draws(draws, variable = "lp__", chain = chains_i) |>
+    summarise_draws("rhat", "ess_bulk", "ess_tail") |>
+    mutate(imputation = i)
+}) |> bind_rows()
+
+lp_by_imp
+summary(lp_by_imp[, c("rhat", "ess_bulk", "ess_tail")])
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h1)$Parameter == "divergent__" &
+          nuts_params(fit_h1)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h1, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h1)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h1, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h1, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h1, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h1, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h1, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h1, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h1, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h1 <- loo(fit_h1)
+pareto_k_table(loo_h1)
+plot(loo_h1, label_points = TRUE)
+
+# Prior sensitivity
+cat("\n=== Power-Scaled Sensitivity Checks ===\n")
+powerscale_sensitivity(fit_h1)
+powerscale_plot_dens(fit_h1)
+powerscale_sensitivity(fit_h1, prior_selection = "b")
+powerscale_plot_dens(fit_h1, prior_selection = "b")
+powerscale_sensitivity(fit_h1, prior_selection = "intercept")
+powerscale_plot_dens(fit_h1, prior_selection = "intercept")
+powerscale_sensitivity(fit_h1, prior_selection = "sigma")
+powerscale_plot_dens(fit_h1, prior_selection = "sigma")
+```
+
+### H1 Model no interaction
+
+```{r H1-model-no-interaction}
+fit_h1_nointeract <- brm_multiple(
+  formula = formula_h1_nointeract,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors,   
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,
+  seed = 12345
+)
+
+saveRDS(fit_h1_nointeract, here("Main Models", "fit_h1_nointeract.rds"))
+```
+
+### H1 Model no interaction output
+
+```{r H1-no-interact-output}
+bayes_R2(fit_h1_nointeract)
+
+# Compute pd and ROPE
+effect_h1_nointeract <- describe_posterior(
+  fit_h1_nointeract,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h1_nointeract <- effect_h1_nointeract %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h1_nointeract %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+
+# ADHD difference in raw outcome units
+cat("=== ADHD difference in raw outcome units ===\n")
+
+# Extract SD of the raw outcome from each imputed dataset, then average across imputations
+sd_ers_raw <- map_dbl(analytic_dfs, ~ sd(.x$ers_total, na.rm = TRUE)) %>% mean()
+
+draws <- as_draws_df(fit_h1_nointeract)
+
+raw_effects <- draws %>%
+  transmute(
+    adhd_raw_effect = b_adhd_statusY * sd_ers_raw
+  )
+
+hdi_adhd <- bayestestR::hdi(raw_effects$adhd_raw_effect, ci = 0.95)
+
+tibble(
+  adhd_raw_effect_mean  = mean(raw_effects$adhd_raw_effect),
+  adhd_raw_effect_lower = hdi_adhd$CI_low,
+  adhd_raw_effect_upper = hdi_adhd$CI_high
+) %>%
+  knitr::kable(digits = 2)
+```
+
+### H1 Model no interaction diagnostics and PP checks
+
+```{r H1-nointeract-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h1_nointeract) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== R-hat & ESS for log posterior density ===\n")
+draws <- as_draws_array(fit_h1_nointeract)
+
+chains_per_imp <- 4
+n_imp          <- nchains(draws) / chains_per_imp
+n_imp
+
+lp_by_imp <- lapply(seq_len(n_imp), function(i) {
+  chains_i <- ((i - 1) * chains_per_imp + 1):(i * chains_per_imp)
+  subset_draws(draws, variable = "lp__", chain = chains_i) |>
+    summarise_draws("rhat", "ess_bulk", "ess_tail") |>
+    mutate(imputation = i)
+}) |> bind_rows()
+
+lp_by_imp
+summary(lp_by_imp[, c("rhat", "ess_bulk", "ess_tail")])
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h1_nointeract)$Parameter == "divergent__" &
+          nuts_params(fit_h1_nointeract)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h1_nointeract, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h1_nointeract)
+
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h1_nointeract, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h1_nointeract, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h1_nointeract, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h1_nointeract, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h1_nointeract, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h1_nointeract, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h1_nointeract, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h1_nointeract <- loo(fit_h1_nointeract)
+pareto_k_table(loo_h1_nointeract)
+plot(loo_h1_nointeract, label_points = TRUE)
+```
+
+### H2 Model
+
+```{r H2-model}
+fit_h2 <- brm_multiple(
+  formula = formula_h2,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,
+  save_pars = save_pars(all = TRUE),
+  seed = 12345
+)
+
+saveRDS(fit_h2, here("Main Models", "fit_h2.rds"))
+```
+
+### H2 Model output
+
+```{r H2-output}
+bayes_R2(fit_h2)
+
+# Compute pd and ROPE
+effect_h2 <- describe_posterior(
+  fit_h2,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h2 <- effect_h2 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h2 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H2 Model diagnostics and PP checks
+
+```{r H2-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h2) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== R-hat & ESS for log posterior density ===\n")
+draws <- as_draws_array(fit_h2)
+
+chains_per_imp <- 4
+n_imp          <- nchains(draws) / chains_per_imp
+n_imp
+
+lp_by_imp <- lapply(seq_len(n_imp), function(i) {
+  chains_i <- ((i - 1) * chains_per_imp + 1):(i * chains_per_imp)
+  subset_draws(draws, variable = "lp__", chain = chains_i) |>
+    summarise_draws("rhat", "ess_bulk", "ess_tail") |>
+    mutate(imputation = i)
+}) |> bind_rows()
+
+lp_by_imp
+summary(lp_by_imp[, c("rhat", "ess_bulk", "ess_tail")])
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h2)$Parameter == "divergent__" &
+          nuts_params(fit_h2)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h2, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h2)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h2, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h2, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h2, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h2, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h2, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h2, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h2, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h2 <- loo(fit_h2)
+pareto_k_table(loo_h2)
+plot(loo_h2, label_points = TRUE)
+
+# Prior sensitivity
+cat("\n=== Power-Scaled Sensitivity Checks ===\n")
+powerscale_sensitivity(fit_h2)
+powerscale_plot_dens(fit_h2)
+powerscale_sensitivity(fit_h2, prior_selection = "b")
+powerscale_plot_dens(fit_h2, prior_selection = "b")
+powerscale_sensitivity(fit_h2, prior_selection = "intercept")
+powerscale_plot_dens(fit_h2, prior_selection = "intercept")
+powerscale_sensitivity(fit_h2, prior_selection = "sigma")
+powerscale_plot_dens(fit_h2, prior_selection = "sigma")
+```
+
+### H2 Model interaction
+
+```{r H2-interaction}
+slopes_emm <- emtrends(fit_h2, ~ adhd_status, var = "pubertal_timing_s")
+
+# Extract full posterior draws for pd/ROPE calculations
+slopes_posterior <- gather_emmeans_draws(slopes_emm) %>%      
+  rename(slope = .value)
+
+# Summary table
+results_table <- slopes_posterior %>%
+  group_by(adhd_status) %>%
+  summarise(
+    slope_mean = mean(slope),
+    lower_95 = bayestestR::hdi(slope, ci = .95)$CI_low,
+    upper_95 = bayestestR::hdi(slope, ci = .95)$CI_high,
+    pd = as.numeric(p_direction(slope)),
+    rope_percent = rope(slope, range = c(-0.1, 0.1), ci = 1)$ROPE_Percentage * 100,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    ci_95 = paste0("[", round(lower_95, 2), ", ", round(upper_95, 2), "]"),
+    slope_mean = round(slope_mean, 2),
+    pd = paste0(round(pd * 100, 1), "%"),
+    rope_percent = paste0(round(rope_percent, 1), "%")
+  ) %>%
+  select(adhd_status, slope_mean, ci_95, pd, rope_percent)
+
+cat("\n=== Simple slopes analysis ===\n")
+kable(results_table,
+      col.names = c("Group", "Slope (Mean)", "95% CI", "pd", "% in ROPE"),
+      align = "c")
+
+
+cat("\n=== Pubertal timing effect on emotional reactivity (raw) in non-ADHD group ===\n")
+
+# Get pooled raw-scale SDs across all imputed datasets
+
+sd_pt_per_df  <- sapply(analytic_dfs, function(df) sd(df$pubertal_timing, na.rm = TRUE))
+sd_out_per_df <- sapply(analytic_dfs, function(df) sd(df$ers_total, na.rm = TRUE))
+
+sd_pt_pooled  <- mean(sd_pt_per_df)
+sd_out_pooled <- mean(sd_out_per_df)
+
+# Conversion factor
+
+conversion_factor <- sd_out_pooled / sd_pt_pooled
+
+# Extract non-ADHD slope in standardised units
+
+# Use slopes_posterior (raw draws)
+nonADHD_draws <- slopes_posterior %>%
+  filter(adhd_status == "N") %>%
+  pull(slope)
+
+# Convert draws to raw units
+
+nonADHD_raw_draws <- nonADHD_draws * conversion_factor
+
+hdi_raw <- bayestestR::hdi(nonADHD_raw_draws, ci = .95)
+
+# Summary
+raw_slope_summary <- tibble(
+  slope_mean_raw = mean(nonADHD_raw_draws),
+  lower_95_raw   = hdi_raw$CI_low,
+  upper_95_raw   = hdi_raw$CI_high
+)
+
+raw_slope_summary
+```
+
+### H2 Model interaction graph
+
+```{r H2-interaction-graph}
+raw_data <- analytic_dfs[[1]]
+raw_data$adhd_status <- factor(
+  raw_data$adhd_status,
+  levels = c("N", "Y"),
+  labels = c("Non-ADHD", "ADHD")
+)
+
+ce <- conditional_effects(
+  fit_h2,
+  effects = "pubertal_timing_s:adhd_status",
+  int_conditions = list(adhd_status = c("N", "Y"))
+)
+
+ce_data <- ce[[1]]
+ce_data$adhd_status <- factor(
+  ce_data$adhd_status,
+  levels = c("N", "Y"),
+  labels = c("Non-ADHD", "ADHD")
+)
+
+group_colors <- c(
+  "Non-ADHD" = "#0072B2",
+  "ADHD" = "orange"
+)
+
+group_shapes <- c(
+  "Non-ADHD" = 16,
+  "ADHD" = 17
+)
+
+group_linetypes <- c(
+  "Non-ADHD" = "solid",
+  "ADHD" = "dashed"
+)
+
+x_lab <- "Pubertal Timing"
+y_lab <- "Emotional Reactivity"
+
+# Create plot
+p <- ggplot(
+  ce_data,
+  aes(
+    x = pubertal_timing_s,
+    y = estimate__,
+    color = adhd_status,
+    fill = adhd_status,
+    linetype = adhd_status
+  )
+) +
+  
+  # 95% credible intervals
+  geom_ribbon(
+    aes(ymin = lower__, ymax = upper__),
+    alpha = 0.20,
+    color = NA
+  ) +
+  
+  # Model-estimated lines
+  geom_line(linewidth = 0.9) +
+  
+  # Raw data
+  geom_point(
+    data = raw_data,
+    aes(
+      x = pubertal_timing_s,
+      y = ers_total_s,
+      color = adhd_status,
+      shape = adhd_status
+    ),
+    alpha = 0.30,
+    size = 2.0,
+    inherit.aes = FALSE
+  ) +
+  
+  scale_color_manual(values = group_colors) +
+  scale_fill_manual(values = group_colors) +
+  
+  scale_shape_manual(values = group_shapes) +
+  
+  scale_linetype_manual(values = group_linetypes) +
+  
+  coord_cartesian(
+    xlim = c(-3.0, 3.0),
+    ylim = c(-3.0, 3.0),
+    clip = "off"
+  ) +
+  
+  labs(
+    x = paste0(
+      x_lab,
+      "\n",
+      "\u2190 Later                      Earlier \u2192"
+    ),
+    y = y_lab
+  ) +
+  
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 9),
+    axis.title.x = element_text(lineheight = 1.4),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 9),
+    plot.margin = margin(
+      t = 10,
+      r = 10,
+      b = 25,
+      l = 45
+    ),
+    plot.title = element_blank()
+  )
+print(p)
+
+ggsave(
+  here("Main Models", "pubertal_timing_adhd_plot.png"),
+  plot = p,
+  width = 6,
+  height = 6,
+  units = "in",
+  dpi = 900
+)
+```
+

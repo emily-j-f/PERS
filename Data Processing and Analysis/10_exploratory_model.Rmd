@@ -1,0 +1,323 @@
+---
+title: "Puberty emotions exploratory moderated mediation analysis"
+author: "Emily Friedel"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+### Load libraries
+
+```{r libraries}
+library(tidyverse)
+library(mice)
+library(brms)
+library(posterior)
+library(bayestestR)
+library(purrr)
+library(bayesplot)
+library(loo)
+library(here)
+```
+
+### Import saved imputed dfs
+
+```{r import-data}
+analytic_dfs <- readRDS(here("Imputed Data", "analytic_dfs.rds"))
+```
+
+### Initial checks
+
+```{r initial-checks}
+length(analytic_dfs)
+sapply(analytic_dfs, nrow) |> unique()
+str(analytic_dfs[[1]])
+```
+
+### Create folders
+
+```{r folders}
+dir.create(here("Exploratory Model"), showWarnings = FALSE)
+```
+
+## Prior predictive check
+
+```{r prior-predictive-check}
+prior_med <- c(
+  prior(normal(0, 1), class = "b", resp = "erstotals"),
+  prior(normal(0, 1), class = "Intercept", resp = "erstotals"),
+  prior(exponential(1), class = "sigma", resp = "erstotals"),
+
+  prior(normal(0, 1), class = "b", resp = "smfqtotals"),
+  prior(normal(0, 1), class = "Intercept", resp = "smfqtotals"),
+  prior(exponential(1), class = "sigma", resp = "smfqtotals"),
+
+  prior(lkj(5), class = "rescor")
+)
+
+bf_mediator <- bf(
+  ers_total_s ~ pubertal_timing_s * adhd_status + sed_percentile_s
+)
+
+bf_outcome <- bf(
+  smfq_total_s ~ pubertal_timing_s + adhd_status + sed_percentile_s +
+    ers_total_s
+)
+
+fit_med_prior <- brm(
+  bf_mediator + bf_outcome + set_rescor(TRUE),
+  data = analytic_dfs[[1]],
+  prior = prior_med,
+  sample_prior = "only",
+  chains = 4,
+  iter = 2000,
+  seed = 123
+)
+
+# Mediator equation (ERS)
+yrep_mediator <- posterior_predict(fit_med_prior, resp = "erstotals")
+range(yrep_mediator)
+mean(yrep_mediator)
+sd(as.vector(yrep_mediator))
+quantile(as.vector(yrep_mediator), c(.01, .05, .5, .95, .99))
+
+# Outcome equation (SMFQ)
+yrep_outcome <- posterior_predict(fit_med_prior, resp = "smfqtotals")
+range(yrep_outcome)
+mean(yrep_outcome)
+sd(as.vector(yrep_outcome))
+quantile(as.vector(yrep_outcome), c(.01, .05, .5, .95, .99))
+
+# Stats
+ppd_stat(yrep_mediator, stat = "mean")
+ppd_stat(yrep_mediator, stat = "sd")
+
+ppd_stat(yrep_outcome, stat = "mean")
+ppd_stat(yrep_outcome, stat = "sd")
+
+cat("\n=== prior summary: fit_med_prior ===\n")
+prior_summary(fit_med_prior)
+
+cat("\n=== model summary: fit_med_prior ===\n")
+summary(fit_med_prior)
+```
+
+## Moderated Mediation
+
+```{r moderated-mediation}
+# Formulas
+bf_mediator <- bf(
+  ers_total_s ~ pubertal_timing_s * adhd_status + sed_percentile_s
+)
+
+bf_outcome <- bf(
+  smfq_total_s ~ pubertal_timing_s + adhd_status + sed_percentile_s +
+    ers_total_s
+)
+
+# Model fit
+fit_med <- brm_multiple(
+  bf_mediator + bf_outcome + set_rescor(TRUE),
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = prior_med,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000, 
+  cores = 4,
+  save_pars = save_pars(all = TRUE),
+  seed = 12345
+)
+
+saveRDS(fit_med, here("Exploratory Model", "fit_med.rds"))
+```
+
+### Moderated Mediation output
+
+```{r moderated-mediation-output}
+draws <- as_draws_df(fit_med)
+
+# Coefficient names
+a1          <- "b_erstotals_pubertal_timing_s"
+a3          <- "b_erstotals_pubertal_timing_s:adhd_statusY"
+b           <- "b_smfqtotals_ers_total_s"
+cprime_pt   <- "b_smfqtotals_pubertal_timing_s"
+cprime_adhd <- "b_smfqtotals_adhd_statusY"
+adhd_to_ers <- "b_erstotals_adhd_statusY"
+
+# Compute effects
+effects <- draws %>%
+  transmute(
+    # Path a: pubertal timing -> ERS, conditional on ADHD status
+    a_noADHD = .data[[a1]],
+    a_ADHD   = .data[[a1]] + .data[[a3]],
+
+    # Path a moderation: difference in a-path between ADHD and non-ADHD
+    a_moderation = .data[[a3]],
+
+    # Path b: ERS -> SMFQ
+    b_path = .data[[b]],
+
+    # Other paths
+    adhd_ers   = .data[[adhd_to_ers]],
+    adhd_smfq  = .data[[cprime_adhd]],
+
+    # Direct effect (pubertal timing -> SMFQ)
+    cprime = .data[[cprime_pt]],
+
+    # Conditional indirect effects
+    ind_noADHD = a_noADHD * b_path,
+    ind_ADHD   = a_ADHD   * b_path,
+
+    # Index of moderated mediation
+    index_mod_med = a_moderation * b_path,
+
+    # Total effects at each ADHD level
+    tot_noADHD = cprime + ind_noADHD,
+    tot_ADHD   = cprime + ind_ADHD
+  )
+
+# Metric functions
+pd_pct <- function(x) max(mean(x > 0), mean(x < 0)) * 100
+
+rope_prop <- function(x, lower = -0.1, upper = 0.1) {
+  mean(x > lower & x < upper) * 100
+}
+
+summary_effect <- function(x, rope_range = c(-0.1, 0.1)) {
+  h <- bayestestR::hdi(x, ci = 0.95)
+  c(
+    Median = median(x),
+    `Lower 95% HDI` = h$CI_low,
+    `Upper 95% HDI` = h$CI_high,
+    PD = pd_pct(x),
+    ROPE = rope_prop(x, rope_range[1], rope_range[2])
+  )
+}
+
+# Summary
+mediation_summary <- bind_rows(
+  # Path a
+  `Path a (non-ADHD): timing -> ERS`   = summary_effect(effects$a_noADHD),
+  `Path a (ADHD): timing -> ERS`       = summary_effect(effects$a_ADHD),
+  `Path a moderation (timing x ADHD)`  = summary_effect(effects$a_moderation),
+
+  # Path b
+  `Path b: ERS -> SMFQ`                = summary_effect(effects$b_path),
+
+  # Other paths
+  `ADHD -> ERS`                        = summary_effect(effects$adhd_ers),
+  `ADHD -> SMFQ (adjusted)`            = summary_effect(effects$adhd_smfq),
+
+  # Mediation effects
+  `Indirect (non-ADHD)`                = summary_effect(effects$ind_noADHD, rope_range = c(-0.1, 0.1)),
+  `Indirect (ADHD)`                    = summary_effect(effects$ind_ADHD,   rope_range = c(-0.1, 0.1)),
+  `Index of Moderated Mediation`       = summary_effect(effects$index_mod_med, rope_range = c(-0.1, 0.1)),
+  Direct                               = summary_effect(effects$cprime),
+  `Total (non-ADHD)`                   = summary_effect(effects$tot_noADHD),
+  `Total (ADHD)`                       = summary_effect(effects$tot_ADHD),
+  .id = "Effect"
+) %>%
+  as_tibble() %>%
+  mutate(across(where(is.numeric), ~ round(.x, 2)))
+
+mediation_summary
+```
+
+### Moderated Mediation diagnostics
+
+```{r moderated-mediation-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n")
+
+as_draws_df(fit_med) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:",
+    sum(nuts_params(fit_med)$Parameter == "divergent__" &
+          nuts_params(fit_med)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_med, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_med)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_med, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay (Mediator: ers_total_s) ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_med, resp = "erstotals", ndraws = 100)
+
+cat("\n=== PPC: Density Overlay (Outcome: smfq_total_s) ===\n")
+pp_check(fit_med, resp = "smfqtotals", ndraws = 100)
+
+cat("\n=== PPC: Error Histogram (Mediator) ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_med, resp = "erstotals", type = "error_hist")
+
+cat("\n=== PPC: Error Histogram (Outcome) ===\n")
+pp_check(fit_med, resp = "smfqtotals", type = "error_hist")
+
+cat("\n=== PPC: Mean (Mediator) ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_med, resp = "erstotals", type = "stat", stat = "mean")
+
+cat("\n=== PPC: Mean (Outcome) ===\n")
+pp_check(fit_med, resp = "smfqtotals", type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median (Mediator) ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_med, resp = "erstotals", type = "stat", stat = "median")
+
+cat("\n=== PPC: Median (Outcome) ===\n")
+pp_check(fit_med, resp = "smfqtotals", type = "stat", stat = "median")
+
+cat("\n=== PPC: SD (Mediator) ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_med, resp = "erstotals", type = "stat", stat = "sd")
+
+cat("\n=== PPC: SD (Outcome) ===\n")
+pp_check(fit_med, resp = "smfqtotals", type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average (Mediator) ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_med, resp = "erstotals", type = "scatter_avg")
+
+cat("\n=== PPC: Scatter Average (Outcome) ===\n")
+pp_check(fit_med, resp = "smfqtotals", type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k: Joint model (both equations combined) ===\n")
+loo_med <- loo(fit_med)
+pareto_k_table(loo_med)
+plot(loo_med, label_points = TRUE)
+
+cat("\n=== Pareto-k: Mediator equation only ===\n")
+loo_med_ers <- loo(fit_med, resp = "erstotals")
+pareto_k_table(loo_med_ers)
+plot(loo_med_ers, label_points = TRUE)
+
+cat("\n=== Pareto-k: Outcome equation only ===\n")
+loo_med_smfq <- loo(fit_med, resp = "smfqtotals")
+pareto_k_table(loo_med_smfq)
+plot(loo_med_smfq, label_points = TRUE)
+```
+
+
+

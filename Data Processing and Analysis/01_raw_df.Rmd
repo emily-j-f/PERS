@@ -1,0 +1,371 @@
+---
+title: "Puberty & emotional reactivity study create raw combined dataframe"
+author: "Emily Friedel"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+### Load libraries
+
+```{r libraries}
+library(tidyverse)
+library(here)
+```
+
+### Import survey data
+
+```{r import-data}
+c_df <- read_csv(
+  here("Raw Data", "caregiver_survey.csv"),
+  col_types = cols(
+    postcode_c_1 = col_character(),
+    .default = col_guess()
+  )
+)
+
+y_df <- read_csv(
+  here("Raw Data", "young_person_survey.csv")
+)
+```
+
+### Initial checks
+
+```{r initial-checks}
+head(c_df)
+head(y_df)
+```
+
+### Create folders
+
+```{r folders}
+dir.create(here("Clean Data"), showWarnings = FALSE)
+```
+
+## 1. Initial cleaning
+
+### 1.1 Remove metadata rows
+
+```{r remove-metadata}
+c_df <- c_df[-c(1, 2), ]
+c_df <- type_convert(
+  c_df,
+  col_types = cols(
+    postcode_c_1 = col_character(),
+    .default = col_guess()
+  )
+)
+head(c_df)
+nrow(c_df)
+
+y_df <- y_df[-c(1, 2), ]
+y_df <- type_convert(y_df)
+head(y_df)
+nrow(y_df)
+```
+
+### 1.2 Check for problems
+
+```{r check-problems}
+problems(c_df)
+problems(y_df)
+```
+
+### 1.3 Drop irrelevant columns from each df
+
+```{r drop-columns}
+names(c_df)[c(1:7, 9:11)]
+names(y_df)[c(1:7, 9:11)]
+
+c_df <- c_df %>%
+  select(-c(1:7, 9:11))
+y_df <- y_df %>%
+  select(-c(1:7, 9:11))
+
+# Quick check
+head(c_df)
+head(y_df)
+```
+
+### 1.4 Clean LinkCode variable
+
+```{r clean-linkcode}
+clean_linkcode <- function(x) {
+  x <- str_trim(as.character(x))
+  x[x == ""] <- NA_character_
+  x
+}
+
+c_df <- c_df %>% mutate(LinkCode = clean_linkcode(LinkCode))
+y_df <- y_df %>% mutate(LinkCode = clean_linkcode(LinkCode))
+```
+
+### 1.5 Remove rows with low completeness
+
+```{r remove-low-completeness}
+# Settings
+min_items <- 6   # minimum number of answered survey items (IDs excluded)
+id_cols <- c("ResponseId", "LinkCode")
+
+# Add completeness variable
+count_answered <- function(df, id_cols) {
+  df %>%
+    select(-all_of(id_cols)) %>%
+    mutate(across(everything(), ~ !(is.na(.x) | str_trim(as.character(.x)) == ""))) %>%
+    rowSums()
+}
+
+c_df <- c_df %>% mutate(completeness_c = count_answered(., id_cols))
+y_df <- y_df %>% mutate(completeness_y = count_answered(., id_cols))
+
+# Distribution before filtering
+c_table_before <- table(c_df$completeness_c >= min_items)
+y_table_before <- table(y_df$completeness_y >= min_items)
+
+# Rows that will be removed
+c_removed_rows <- c_df %>% filter(completeness_c < min_items)
+y_removed_rows <- y_df %>% filter(completeness_y < min_items)
+
+c_n_removed <- nrow(c_removed_rows)
+y_n_removed <- nrow(y_removed_rows)
+
+# Apply filter
+c_df <- c_df %>% filter(completeness_c >= min_items)
+y_df <- y_df %>% filter(completeness_y >= min_items)
+
+# Print summary
+print(c_table_before)
+print(c_n_removed)
+print(c_removed_rows)
+
+print(y_table_before)
+print(y_n_removed)
+print(y_removed_rows)
+
+# Drop completeness columns
+c_df <- c_df %>% select(-completeness_c)
+y_df <- y_df %>% select(-completeness_y)
+```
+
+### 1.6 Check for LinkCode duplicates
+
+```{r linkcode-duplicates}
+# Multiple LinkCodes caregiver survey
+c_multiple <- c_df %>%
+  count(LinkCode) %>%
+  filter(n > 1)
+c_multiple
+
+# Multiple LinkCodes young person survey
+y_multiple <- y_df %>%
+  count(LinkCode) %>%
+  filter(n > 1)
+y_multiple
+```
+
+### 1.7 Inspect duplicated LinkCodes
+
+```{r check-duplicated-linkcodes}
+# Show all rows for any LinkCode that appears more than once
+c_rows_to_print <- c_df %>%
+  filter(LinkCode %in% c_multiple$LinkCode) %>%
+  arrange(LinkCode)
+c_rows_to_print
+
+y_rows_to_print <- y_df %>%
+  filter(LinkCode %in% y_multiple$LinkCode) %>%
+  arrange(LinkCode)
+y_rows_to_print
+```
+
+### 1.8 Remove duplicated participants
+
+```{r remove-duplicates}
+# Remove duplicate responses: keep the most complete response per LinkCode
+remove_least_complete <- function(df, id_cols) {
+  df <- df %>% mutate(.completeness = count_answered(., id_cols))
+
+  # Only deduplicate rows with a LinkCode
+  keep <- df %>%
+    filter(!is.na(LinkCode)) %>%
+    group_by(LinkCode) %>%
+    arrange(desc(.completeness), .by_group = TRUE) %>%
+    slice(1) %>%
+    ungroup()
+
+  na_rows <- df %>% filter(is.na(LinkCode))
+
+  bind_rows(keep, na_rows) %>% select(-.completeness)
+}
+
+# Run the dedupe once per survey
+c_dedup <- remove_least_complete(c_df, id_cols)
+y_dedup <- remove_least_complete(y_df, id_cols)
+
+# Keep a record of what was removed
+c_dupes_removed <- anti_join(c_df, c_dedup, by = "ResponseId")
+y_dupes_removed <- anti_join(y_df, y_dedup, by = "ResponseId")
+
+c_dupes_removed
+y_dupes_removed
+
+# Apply
+c_df <- c_dedup
+y_df <- y_dedup
+
+# Check: stops knitting if any LinkCode is still duplicated
+stopifnot(
+  !any(duplicated(na.omit(c_df$LinkCode))),
+  !any(duplicated(na.omit(y_df$LinkCode)))
+)
+```
+
+## 2. Combine young person and caregiver dfs
+
+### 2.1 Relabel ResponseId
+
+```{r relabel-responseid}
+c_df <- c_df %>%
+  rename(ResponseId_c = ResponseId)
+
+y_df <- y_df %>%
+  rename(ResponseId_y = ResponseId)
+```
+
+### 2.2 Combine using LinkCode
+
+```{r combine-caregiver-self-dfs}
+# Capture survey-specific column names before joining
+c_cols <- setdiff(names(c_df), c("LinkCode", "ResponseId_c"))
+y_cols <- setdiff(names(y_df), c("LinkCode", "ResponseId_y"))
+
+cat("=== Intersecting columns ===\n")
+intersect(c_cols, y_cols)
+stopifnot(length(intersect(c_cols, y_cols)) == 0)
+
+# Count responses with missing LinkCode (these cannot be matched)
+cat("=== Missing LinkCode ===\n")
+c_n_missing_link <- sum(is.na(c_df$LinkCode))
+y_n_missing_link <- sum(is.na(y_df$LinkCode))
+c_n_missing_link
+y_n_missing_link
+
+# Inspect them before they are dropped
+c_missing_link_rows <- c_df %>% filter(is.na(LinkCode))
+y_missing_link_rows <- y_df %>% filter(is.na(LinkCode))
+c_missing_link_rows
+y_missing_link_rows
+
+# Join, keeping only rows with a LinkCode
+df_raw_full <- full_join(
+  c_df %>% filter(!is.na(LinkCode)),
+  y_df %>% filter(!is.na(LinkCode)),
+  by = "LinkCode"
+)
+
+head(df_raw_full)
+```
+
+### 2.3 Coalesce ResponseId
+
+```{r coalesce-responseid}
+# Coalesce ResponseId (caregiver ID first, then young person ID)
+df_raw_full <- df_raw_full %>%
+  mutate(ResponseId = coalesce(ResponseId_c, ResponseId_y))
+
+# Checks
+cat("Rows:", nrow(df_raw_full), "\n")
+cat("Unique ResponseIds:", n_distinct(df_raw_full$ResponseId), "\n")
+cat("Missing ResponseIds:", sum(is.na(df_raw_full$ResponseId)), "\n")
+
+stopifnot(
+  sum(is.na(df_raw_full$ResponseId)) == 0,
+  n_distinct(df_raw_full$ResponseId) == nrow(df_raw_full)
+)
+```
+
+### 2.4 Flag orphan reports
+
+```{r flag-orphans}
+# Flag missing reports (derived from ResponseIds, not item columns)
+df_raw_full <- df_raw_full %>%
+  mutate(
+    caregiver_missing = is.na(ResponseId_c),   # young person-only row
+    self_missing      = is.na(ResponseId_y)    # caregiver-only row
+  )
+
+# Inspect flags
+table(df_raw_full$caregiver_missing, useNA = "ifany")
+table(df_raw_full$self_missing, useNA = "ifany")
+
+# Check: a row can't be missing both reports
+stopifnot(!any(df_raw_full$caregiver_missing & df_raw_full$self_missing))
+
+# Check: flags agree with the item columns
+# (a report present by ID but with all items NA would show up here)
+df_raw_full %>%
+  filter(
+    (!caregiver_missing & if_all(all_of(c_cols), is.na)) |
+    (!self_missing      & if_all(all_of(y_cols), is.na))
+  ) %>%
+  select(LinkCode, ResponseId_c, ResponseId_y)
+
+# Check: view the unmatched rows
+df_raw_full %>%
+  filter(caregiver_missing | self_missing) %>%
+  select(LinkCode, ResponseId_c, ResponseId_y, caregiver_missing, self_missing) %>%
+  head(10)
+```
+
+### 2.5 Sample size
+
+```{r combined-sample}
+# Sample size
+sample_summary <- tibble(
+  measure = c(
+    "Rows in combined df",
+    "Unique LinkCodes",
+    "Unique caregiver responses",
+    "Unique young person responses",
+    "Matched pairs (both reports present)",
+    "Caregiver-only (self orphan)",
+    "Young person-only (caregiver orphan)"
+  ),
+  n = c(
+    nrow(df_raw_full),
+    n_distinct(df_raw_full$LinkCode),
+    n_distinct(df_raw_full$ResponseId_c, na.rm = TRUE),
+    n_distinct(df_raw_full$ResponseId_y, na.rm = TRUE),
+    sum(!is.na(df_raw_full$ResponseId_c) & !is.na(df_raw_full$ResponseId_y)),
+    sum(df_raw_full$self_missing),
+    sum(df_raw_full$caregiver_missing)
+  )
+)
+
+sample_summary
+
+# Sanity checks: stop knitting if the counts don't add up
+stopifnot(
+  nrow(df_raw_full) == n_distinct(df_raw_full$LinkCode),
+  sample_summary$n[5] + sample_summary$n[6] + sample_summary$n[7] == nrow(df_raw_full)
+)
+```
+
+### 2.6 Check df
+
+```{r view-df}
+head(df_raw_full)
+str(df_raw_full)
+```
+
+## 3. Save full raw df
+
+```{r save-df}
+saveRDS(df_raw_full, here("Clean Data", "df_raw_full.rds"))
+```

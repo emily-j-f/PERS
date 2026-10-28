@@ -1,0 +1,1365 @@
+---
+title: "Puberty & emotional reactivity study data cleaning"
+author: "Emily Friedel"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+### Load libraries
+
+```{r libraries}
+library(tidyverse)
+library(readxl)
+library(naniar)
+library(gt)
+library(here)
+```
+
+### Import data
+
+```{r import-data-rename}
+# Import
+df_raw_full <- readRDS(here("Clean Data",
+  "df_raw_full.rds")
+)
+
+# Rename for cleaning
+df_clean <- df_raw_full
+```
+
+### Initial checkjs 
+
+```{r intital-checks}
+head(df_clean)
+```
+
+### Create folders
+
+```{r folders}
+dir.create(here("Clean Data"), showWarnings = FALSE)
+dir.create(here("Imputed Data"), showWarnings = FALSE)
+```
+
+## 1. Identifier harmonisation
+
+### 1.1 Check unique self and caregiver reports
+
+```{r unique-self-caregiver-reports}
+n_distinct(df_clean$ResponseId_c, na.rm = TRUE)
+n_distinct(df_clean$ResponseId_y, na.rm = TRUE)
+
+# LinkCode duplicates
+dup_linkcode <- df_clean %>%
+  filter(!is.na(LinkCode)) %>%
+  count(LinkCode) %>%
+  filter(n > 1)
+
+if (nrow(dup_linkcode) > 0) {
+  warning(
+    sprintf(
+      "%d LinkCode(s) appear more than once: %s",
+      nrow(dup_linkcode),
+      paste(dup_linkcode$LinkCode, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
+# ResponseId_c duplicates
+dup_responseid_c <- df_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  count(ResponseId_c) %>%
+  filter(n > 1)
+
+if (nrow(dup_responseid_c) > 0) {
+  warning(
+    sprintf(
+      "%d ResponseId_c value(s) appear more than once: %s",
+      nrow(dup_responseid_c),
+      paste(dup_responseid_c$ResponseId_c, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
+# ResponseId_y duplicates
+dup_responseid_y <- df_clean %>%
+  filter(!is.na(ResponseId_y)) %>%
+  count(ResponseId_y) %>%
+  filter(n > 1)
+
+if (nrow(dup_responseid_y) > 0) {
+  warning(
+    sprintf(
+      "%d ResponseId_y value(s) appear more than once: %s",
+      nrow(dup_responseid_y),
+      paste(dup_responseid_y$ResponseId_y, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
+# Check for fully duplicated rows (every column identical)
+n_full_dupes <- sum(duplicated(df_clean))
+
+if (n_full_dupes > 0) {
+  warning(
+    sprintf("%d fully duplicated row(s) found in df_clean.", n_full_dupes),
+    call. = FALSE
+  )
+}
+
+cat("LinkCode duplicates:", nrow(dup_linkcode), "\n")
+cat("ResponseId_c duplicates:", nrow(dup_responseid_c), "\n")
+cat("ResponseId_y duplicates:", nrow(dup_responseid_y), "\n")
+cat("Fully duplicated rows:", n_full_dupes, "\n")
+```
+
+## 2. Raw variable recoding
+
+```{r recoding}
+# Helper function
+recode_factor_safe <- function(x, values, labels, var_name) {
+  x_chr <- as.character(x)
+  values_chr <- as.character(values)
+
+  unexpected <- setdiff(unique(x_chr[!is.na(x_chr)]), values_chr)
+
+  if (length(unexpected) > 0) {
+    warning(
+      sprintf(
+        "%s: unexpected value(s) %s not in mapping (%s) — these will become NA.",
+        var_name,
+        paste(unexpected, collapse = ", "),
+        paste(values_chr, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+
+  factor(x_chr, levels = values_chr, labels = labels)
+}
+
+df_clean <- df_clean %>%
+  mutate(
+    # Binary N/Y variables
+    adhd_c                = recode_factor_safe(adhd_c, values = c(1,2), labels = c("N","Y"), var_name = "adhd_c"),
+    adhd_y                = recode_factor_safe(adhd_y, values = c(1,2), labels = c("N","Y"), var_name = "adhd_y"),
+    hormonal_bc_status_c  = recode_factor_safe(hormonal_bc_status_c, values = c(1,2), labels = c("N","Y"), var_name = "hormonal_bc_status_c"),
+    hormonal_bc_status_y  = recode_factor_safe(hormonal_bc_status_y, values = c(1,2), labels = c("N","Y"), var_name = "hormonal_bc_status_y"),
+    adhd_med_status_c     = recode_factor_safe(adhd_med_status_c, values = c(1,2), labels = c("N","Y"), var_name = "adhd_med_status_c"),
+    other_mental_neuro_c  = recode_factor_safe(other_mental_neuro_c, values = c(1,2), labels = c("N","Y"), var_name = "other_mental_neuro_c"),
+    other_health_c        = recode_factor_safe(other_health_c, values = c(1,2), labels = c("N","Y"), var_name = "other_health_c"),
+    medications_c         = recode_factor_safe(medications_c, values = c(1,2), labels = c("N","Y"), var_name = "medications_c"),
+
+    # Gender
+    gender_y = recode_factor_safe(gender_y, values = 1:6,
+                 labels = c("girl","boy","trans_diverse","non_binary","prefer_not","self_describe"),
+                 var_name = "gender_y"),
+    gender_c = recode_factor_safe(gender_c, values = 1:6,
+                 labels = c("girl","boy","trans_diverse","non_binary","prefer_not","self_describe"),
+                 var_name = "gender_c"),
+
+    # Caregiver relationship
+    relationship_c = recode_factor_safe(relationship_c, values = 1:7,
+                 labels = c("mother_stepmother","father_stepfather","grandparent",
+                            "other_relative","foster_carer","legal_guardian_non_relative","other"),
+                 var_name = "relationship_c"),
+
+    # How diagnosed
+    diagnosis_c = recode_factor_safe(diagnosis_c, values = 1:5,
+                 labels = c("paed_psychiatrist","psychologist","self_identified","suspected","other"),
+                 var_name = "diagnosis_c"),
+
+    # Ethnicity / cultural background
+    ethnicity_culture_c = recode_factor_safe(ethnicity_culture_c, values = 1:7,
+                 labels = c("aboriginal_tsi","anglo_euro","e_se_sian","s_asian_middle_eastern",
+                            "ss_african","multiple","other"),
+                 var_name = "ethnicity_culture_c")
+  )
+
+pds_vars <- c("pds_c_1","pds_c_2","pds_c_3","pds_c_4",
+              "pds_y_1","pds_y_2","pds_y_3","pds_y_4")
+
+# PDS 0 recoded to NA
+df_clean[pds_vars] <- lapply(df_clean[pds_vars], function(x) {
+  x[x == 0] <- NA
+  x
+})
+
+# Check recoded variables
+vars <- c(
+  "adhd_c","adhd_y",
+  "hormonal_bc_status_c", 
+  "hormonal_bc_status_y",
+  "adhd_med_status_c",
+  "other_mental_neuro_c", 
+  "other_health_c", 
+  "medications_c",
+  "gender_y", 
+  "gender_c",
+  "relationship_c", 
+  "diagnosis_c",
+  "ethnicity_culture_c"
+)
+
+freq_table <- map_dfr(vars, function(v) {
+  tab <- table(df_clean[[v]], useNA = "ifany")
+  tibble(
+    variable = v,
+    level    = names(tab),
+    n        = as.integer(tab),
+    pct      = round(100 * n / sum(n), 1)
+  )
+})
+
+freq_table %>%
+  group_by(variable) %>%
+  gt() %>%
+  tab_header(title = "Frequency counts for categorical variables")
+```
+
+## 3. Constructed analytic variables pre-imputation
+
+### 3.1 Assign ADHD status 
+
+```{r assign-adhd-status}
+# Check if there are any cases where caregiver ADHD status is missing but adolescent self-report is available
+df_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  summarise(
+    total = n(),
+    adhd_from_caregiver = sum(!is.na(adhd_c)),
+    adhd_from_child = sum(is.na(adhd_c) & !is.na(adhd_y)),
+    adhd_from_neither = sum(is.na(adhd_c) & is.na(adhd_y))
+  )
+# No cases found so ADHD status for main analysis based on caregiver only
+
+# Assign ADHD status
+df_clean <- df_clean %>%
+  mutate(
+    adhd_status = adhd_c,
+    adhd_status = factor(adhd_status, levels = c("N","Y"))
+  )
+
+# Check counts
+table(df_clean$adhd_status, useNA = "ifany")
+```
+
+### 3.2 Assign ADHD medication status
+
+```{r assign-adhd-med-status}
+df_clean <- df_clean %>%
+  mutate(
+    adhd_med_status = case_when(
+      adhd_status == "N" ~ "N",
+      TRUE ~ adhd_med_status_c
+    )
+  )
+
+df_clean <- df_clean %>%
+  mutate(
+    adhd_med_status = factor(adhd_med_status, levels = c("N","Y"))
+  )
+
+table(df_clean$adhd_med_status, useNA = "ifany")
+```
+
+### 3.3 Assign hormonal birth control status
+
+```{r assign-bc-status}
+# Check if there are any cases where caregiver birth control status is missing but adolescent self-report is available
+df_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  summarise(
+    total = n(),
+    bc_from_caregiver = sum(!is.na(hormonal_bc_status_c)),
+    bc_from_child = sum(is.na(hormonal_bc_status_c) & !is.na(hormonal_bc_status_y)),
+    bc_from_neither = sum(is.na(hormonal_bc_status_c) & is.na(hormonal_bc_status_y))
+  )
+# No cases found
+
+# Assign hormonal birth control status
+df_clean <- df_clean %>%
+  mutate(
+    bc_status = case_when(
+      pds_c_5 == 1 ~ "N",  # pre-menarche --> N
+      TRUE ~ hormonal_bc_status_c
+    ),
+    bc_status = factor(bc_status, levels = c("N", "Y"))
+  )
+
+# Young person
+df_clean <- df_clean %>%
+  mutate(
+    bc_status_y = case_when(
+      pds_y_5 == 1 ~ "N",  # pre-menarche --> N
+      TRUE ~ hormonal_bc_status_y
+    ),
+    bc_status_y = factor(bc_status_y, levels = c("N", "Y"))
+  )
+
+# Quick check
+table(df_clean$bc_status, useNA = "ifany")
+table(df_clean$bc_status_y, useNA = "ifany")
+```
+
+### 3.4 Assign co-occurring autism
+
+```{r assign-autism}
+# Inspect all unique non-missing text responses first
+df_clean %>%
+  filter(!is.na(other_mental_neuro_c_2_TEXT), other_mental_neuro_c_2_TEXT != "") %>%
+  distinct(other_mental_neuro_c_2_TEXT) %>%
+  arrange(other_mental_neuro_c_2_TEXT) %>%
+  print(n = Inf)
+
+# Flag autism based on text response (covers "autism"/"autistic" and standalone "ASD")
+autism_pattern <- "autis|\\basd\\b"
+
+df_clean <- df_clean %>%
+  mutate(
+    autism = case_when(
+      # Text mentions autism -> Y
+      grepl(autism_pattern, other_mental_neuro_c_2_TEXT, ignore.case = TRUE) ~ "Y",
+      # Caregiver did not answer the question (or no caregiver response) -> NA
+      is.na(other_mental_neuro_c) ~ NA_character_,
+      # Answered, but no autism mentioned -> N
+      TRUE ~ "N"
+    ),
+    autism = factor(autism, levels = c("N", "Y"))
+  )
+
+# Check
+table(df_clean$autism, useNA = "ifany")
+
+# Cross-check against the parent question
+table(df_clean$autism, df_clean$other_mental_neuro_c, useNA = "ifany")
+
+# Review what text got matched
+df_clean %>%
+  filter(autism == "Y") %>%
+  distinct(other_mental_neuro_c_2_TEXT) %>%
+  print(n = Inf)
+```
+
+### 3.5 Assign socioeconomic disadvantage percentile based on postcode
+
+```{r assign-sed-percentile}
+postcode_sed_percentiles <- read_excel(here("Postcode Data", "postcode_sed_percentiles.xlsx"))
+
+str(postcode_sed_percentiles)
+
+# Check type/format consistency before joining
+cat("Class of df_clean$postcode_c_1:", class(df_clean$postcode_c_1), "\n")
+cat("Class of postcode_sed_percentiles$postcode:", class(postcode_sed_percentiles$postcode), "\n")
+
+# Standardise both to 4-character strings (trim whitespace, pad leading zeros)
+pad_postcode <- function(x) {
+  x <- str_trim(as.character(x))
+  x <- str_remove(x, "\\.0+$")   # guards against "800.0" from numeric Excel cells
+  ifelse(is.na(x), NA_character_, str_pad(x, width = 4, side = "left", pad = "0"))
+}
+
+df_clean <- df_clean %>%
+  mutate(postcode_c_1 = pad_postcode(postcode_c_1))
+
+postcode_sed_percentiles <- postcode_sed_percentiles %>%
+  mutate(postcode = pad_postcode(postcode))
+
+# Check: all postcodes should now be exactly 4 characters
+bad_length <- c(
+  df_clean$postcode_c_1[!is.na(df_clean$postcode_c_1) & nchar(df_clean$postcode_c_1) != 4],
+  postcode_sed_percentiles$postcode[!is.na(postcode_sed_percentiles$postcode) &
+                                      nchar(postcode_sed_percentiles$postcode) != 4]
+)
+
+if (length(bad_length) > 0) {
+  warning(
+    sprintf("%d postcode(s) are not 4 characters long: %s",
+            length(bad_length), paste(unique(bad_length), collapse = ", ")),
+    call. = FALSE
+  )
+}
+
+# Check the lookup table itself is one row per postcode
+dup_postcodes <- postcode_sed_percentiles %>%
+  count(postcode) %>%
+  filter(n > 1)
+
+if (nrow(dup_postcodes) > 0) {
+  warning(
+    sprintf(
+      "%d postcode(s) appear more than once in postcode_sed_percentiles — a join on these will duplicate rows: %s",
+      nrow(dup_postcodes),
+      paste(dup_postcodes$postcode, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
+# Check for df_clean postcodes with no match in the lookup table
+unmatched_postcodes <- df_clean %>%
+  filter(!is.na(postcode_c_1), !postcode_c_1 %in% postcode_sed_percentiles$postcode) %>%
+  distinct(postcode_c_1)
+
+if (nrow(unmatched_postcodes) > 0) {
+  warning(
+    sprintf(
+      "%d unique postcode(s) in df_clean have no match in postcode_sed_percentiles: %s",
+      nrow(unmatched_postcodes),
+      paste(unmatched_postcodes$postcode_c_1, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
+# Perform the join, checking row count doesn't change
+n_before <- nrow(df_clean)
+
+df_clean <- df_clean %>%
+  left_join(
+    postcode_sed_percentiles %>% select(postcode, sed_percentile),
+    by = c("postcode_c_1" = "postcode")
+  )
+
+n_after <- nrow(df_clean)
+
+if (n_after != n_before) {
+  warning(
+    sprintf(
+      "Row count changed after join (%d -> %d) — the lookup table likely has duplicate postcodes.",
+      n_before, n_after
+    ),
+    call. = FALSE
+  )
+}
+
+head(df_clean$sed_percentile)
+
+df_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  summarise(n_missing = sum(is.na(sed_percentile)))
+```
+
+### 3.6 Age summary
+
+```{r age-summary}
+cat("=== Age c (years, months) ===\n")
+summary(df_clean$age_c_1)   
+summary(df_clean$age_c_2)   
+
+cat("=== Age y (years, months) ===\n")
+summary(df_clean$age_y_1)   
+summary(df_clean$age_y_2)  
+```
+
+#### 3.6.1 Check if caregiver-reported age needs to be coalesced
+
+```{r age-cross-informant-sub}
+# Check if there are any cases where caregiver age is missing but adolescent self-report is available
+df_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  summarise(
+    total = n(),
+    age_years_from_caregiver = sum(!is.na(age_c_1)),
+    age_years_from_child = sum(is.na(age_c_1) & !is.na(age_y_1)),
+    age_years_from_neither = sum(is.na(age_c_1) & is.na(age_y_1))
+  )
+
+df_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  summarise(
+    total = n(),
+    age_months_from_caregiver = sum(!is.na(age_c_2)),
+    age_months_from_child = sum(is.na(age_c_2) & !is.na(age_y_2)),
+    age_months_from_neither = sum(is.na(age_c_2) & is.na(age_y_2))
+  )
+
+# No cases found
+```
+
+#### 3.6.2 Check for age (months) >11
+
+```{r check-months-over-11-months}
+df_clean <- df_clean %>%
+  mutate(
+    age_months_invalid_c = !is.na(age_c_2) & age_c_2 > 11,
+    age_months_invalid_y = !is.na(age_y_2) & age_y_2 > 11
+  )
+
+# Checks
+table(df_clean$age_months_invalid_c, useNA = "ifany")
+table(df_clean$age_months_invalid_y, useNA = "ifany")
+
+# None found so no need to correct
+```
+
+#### 3.6.3 Create continuous age variable
+
+```{r continuous-age}
+df_clean <- df_clean %>%
+  mutate(
+    age_cont = age_c_1 + age_c_2 / 12,
+    age_cont_y = age_y_1 + age_y_2 / 12
+  )
+
+head(df_clean$age_cont)
+head(df_clean$age_cont_y)
+```
+
+### 3.7 Menarche age summary
+
+```{r menarche-age-summary}
+cat("=== Menarche age c (years, months) ===\n")
+summary(df_clean$menarche_age_c_1)
+summary(df_clean$menarche_age_c_2)
+
+cat("=== Menarche age y (years, months) ===\n")
+summary(df_clean$menarche_age_y_1)  
+summary(df_clean$menarche_age_y_2) 
+```
+
+#### 3.7.1 Check implausible/impossible y menarche age
+
+```{r impossible-menarche-age}
+df_clean %>%
+  filter(menarche_age_y_1 < 8) %>%
+  select(LinkCode, menarche_age_y_1)
+
+# Correct by converting to NA
+df_clean <- df_clean %>%
+  mutate(
+    menarche_age_y_1 = ifelse(menarche_age_y_1 == 0, NA, menarche_age_y_1)
+  )
+
+summary(df_clean$menarche_age_y_1)
+```
+
+#### 3.7.2 Check if caregiver-reported menarche age needs to be coalesced
+
+```{r menarche-age-cross-informant-sub}
+# Check if there are any cases where caregiver menarche status is missing but adolescent self-report is available
+df_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  summarise(
+    total = n(),
+    menarche_age_years_from_caregiver = sum(!is.na(menarche_age_c_1)),
+    menarche_age_years_from_child = sum(is.na(menarche_age_c_1) & !is.na(menarche_age_y_1)),
+    menarche_age_years_from_neither = sum(is.na(menarche_age_c_1) & is.na(menarche_age_y_1))
+  )
+
+df_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  summarise(
+    total = n(),
+    menarche_age_months_from_caregiver = sum(!is.na(menarche_age_c_2)),
+    menarche_age_months_from_child = sum(is.na(menarche_age_c_2) & !is.na(menarche_age_y_2)),
+    menarche_age_months_from_neither = sum(is.na(menarche_age_c_2) & is.na(menarche_age_y_2))
+  )
+
+# No cases found
+```
+
+#### 3.7.3 Check for menarche age (months) >11
+
+```{r menarche-age-over-11-months}
+df_clean <- df_clean %>%
+  mutate(
+    menarche_age_months_invalid_c = !is.na(menarche_age_c_2) & menarche_age_c_2 > 11,
+    menarche_age_months_invalid_y = !is.na(menarche_age_y_2) & menarche_age_y_2 > 11
+  )
+
+df_clean %>%
+  filter(menarche_age_months_invalid_c == TRUE)
+df_clean %>%
+  filter(menarche_age_months_invalid_y == TRUE)
+```
+
+#### 3.7.4 Set invalid menarche months (>11 or NA) to 0
+
+```{r invalid-menarche-months-to-0}
+# Count what will be changed (before recoding)
+check_months_recode <- function(years, months, label) {
+  tibble(
+    report = label,
+    n_rows = length(months),
+    months_gt11 = sum(months > 11, na.rm = TRUE),
+    months_gt11_years_present = sum(months > 11 & !is.na(years), na.rm = TRUE),
+    months_na_total = sum(is.na(months)),
+    months_na_years_present = sum(is.na(months) & !is.na(years)),
+    months_na_years_also_missing = sum(is.na(months) & is.na(years))
+  )
+}
+
+months_recode_summary <- bind_rows(
+  check_months_recode(df_clean$menarche_age_c_1, df_clean$menarche_age_c_2, "caregiver"),
+  check_months_recode(df_clean$menarche_age_y_1, df_clean$menarche_age_y_2, "young person")
+)
+months_recode_summary
+
+# Recode: months -> 0 only where years is present
+df_clean <- df_clean %>%
+  mutate(
+    menarche_age_y_2 = case_when(
+      is.na(menarche_age_y_1) ~ NA_real_,                 
+      is.na(menarche_age_y_2) ~ 0,                        
+      menarche_age_y_2 > 11 ~ 0,                        
+      TRUE ~ as.numeric(menarche_age_y_2)
+    ),
+    menarche_age_c_2 = case_when(
+      is.na(menarche_age_c_1) ~ NA_real_,
+      is.na(menarche_age_c_2) ~ 0,
+      menarche_age_c_2 > 11 ~ 0,
+      TRUE ~ as.numeric(menarche_age_c_2)
+    )
+  )
+
+table(df_clean$menarche_age_y_2, useNA = "ifany")
+table(df_clean$menarche_age_c_2, useNA = "ifany")
+
+# 3. Checks
+stopifnot(
+  sum(is.na(df_clean$menarche_age_c_2) & !is.na(df_clean$menarche_age_c_1)) == 0,
+  sum(is.na(df_clean$menarche_age_y_2) & !is.na(df_clean$menarche_age_y_1)) == 0,
+  sum(df_clean$menarche_age_c_2 > 11, na.rm = TRUE) == 0,
+  sum(df_clean$menarche_age_y_2 > 11, na.rm = TRUE) == 0
+)
+```
+
+#### 3.7.5 Create continuous menarche age variables
+
+```{r continuous-menarche-age}
+df_clean <- df_clean %>%
+  mutate(
+    menarche_timing = menarche_age_c_1 + menarche_age_c_2 / 12,
+    menarche_timing_y = menarche_age_y_1 + menarche_age_y_2 / 12
+  )
+
+head(df_clean$menarche_timing)
+head(df_clean$menarche_timing_y)
+```
+
+#### 3.7.6 Convert menarche age > age to NA
+
+```{r invalid-menarche-age-to-NA}
+# Number of caregiver-reported menarche ages greater than current age
+sum(df_clean$menarche_timing > df_clean$age_cont, na.rm = TRUE)
+
+# Number of self-reported menarche ages greater than current age
+sum(df_clean$menarche_timing_y > df_clean$age_cont_y, na.rm = TRUE)
+
+# Convert menarche age > age to NA
+df_clean <- df_clean %>%
+  mutate(
+    menarche_timing = ifelse(menarche_timing > age_cont, NA, menarche_timing),
+    menarche_timing_y = ifelse(menarche_timing_y > age_cont_y, NA, menarche_timing_y)
+  )
+```
+
+### 3.8 Menarche status assignment
+
+```{r menarche-status}
+# Check if there are any cases where caregiver menarche status is missing but adolescent self-report is available
+df_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  summarise(
+    total = n(),
+    menarche_from_caregiver = sum(!is.na(pds_c_5)),
+    menarche_from_child = sum(is.na(pds_c_5) & !is.na(pds_y_5)),
+    menarche_from_neither = sum(is.na(pds_c_5) & is.na(pds_y_5))
+  )
+
+df_clean <- df_clean %>%
+  mutate(
+    menarche_status_y = recode_factor_safe(
+      pds_y_5, values = c(1, 4), labels = c("N", "Y"), var_name = "pds_y_5 (menarche_status_y)"
+    ),
+    menarche_status = recode_factor_safe(
+      pds_c_5, values = c(1, 4), labels = c("N", "Y"), var_name = "pds_c_5 (menarche_status)"
+    )
+  )
+
+table(df_clean$menarche_status_y, useNA = "ifany")
+table(df_clean$menarche_status, useNA = "ifany")
+
+# No cases found
+```
+
+### 3.9 Weight/height
+
+#### 3.9.1 Summary weight and height
+
+```{r summary-weight-height}
+summary(df_clean$weight_c_1)
+summary(df_clean$height_c_1)
+```
+
+#### 3.9.2 Correct impossible height
+
+```{r implausible-height}
+df_clean %>%
+  filter(height_c_1 < 100) %>%
+  select(LinkCode, height_c_1)
+
+# Correct by converting from metres to centimetres
+df_clean <- df_clean %>%
+  mutate(
+    height_c_1 = ifelse(height_c_1 < 3, height_c_1 * 100, height_c_1)
+  )
+
+summary(df_clean$height_c_1)
+```
+
+## 4. Exclusion
+
+### 4.1 Flags
+
+```{r exclusion-flags}
+# Flag exclusions
+df_clean <- df_clean %>%
+  mutate(
+    # Young person did not consent - only applicable if they have a youth survey response
+    no_consent = ifelse(!is.na(ResponseId_y), consent_y == 1, NA),
+    
+    # Missing ADHD status - flagged only if missing from both caregiver and youth report
+    no_adhd_status = is.na(adhd_c) & is.na(adhd_y),
+    
+    # Out-of-range age based on caregiver reports as per prereg
+    age_out_of_range = !is.na(age_c_1) & (age_c_1 < 12 | age_c_1 > 17)
+  )
+  
+# Quick tables to check flags
+table(df_clean$no_consent, useNA = "ifany")
+table(df_clean$no_adhd_status, useNA = "ifany")
+table(df_clean$age_out_of_range, useNA = "ifany")
+
+# Count how many would be excluded per criterion
+exclusion_summary <- tibble(
+  Exclusion = c("No consent", "Missing ADHD status", "Out-of-range age"),
+  N_Excluded = c(
+    sum(df_clean$no_consent, na.rm = TRUE),
+    sum(df_clean$no_adhd_status, na.rm = TRUE),
+    sum(df_clean$age_out_of_range, na.rm = TRUE)
+  )
+)
+
+exclusion_summary
+```
+
+### 4.2 Apply exclusions and count
+
+```{r apply-exclusions}
+# Helper: counts total and non-missing ResponseId_c / ResponseId_y
+count_ids <- function(d) {
+  has_c <- !is.na(d$ResponseId_c) & d$ResponseId_c != ""
+  has_y <- !is.na(d$ResponseId_y) & d$ResponseId_y != ""
+  tibble(
+    n        = nrow(d),
+    has_c    = sum(has_c),
+    has_y    = sum(has_y),
+    has_both = sum(has_c & has_y)
+  )
+}
+
+# Helper: print one line of counts
+report <- function(label, d) {
+  x <- count_ids(d)
+  cat(sprintf("%-32s N = %d | ResponseId_c = %d | ResponseId_y = %d | both = %d\n",
+              label, x$n, x$has_c, x$has_y, x$has_both))
+}
+
+# Original sample
+report("Original sample", df_clean)
+flow <- count_ids(df_clean) %>% mutate(step = "Original", .before = 1)
+
+# Exclude no consent
+excl <- df_clean %>% filter(!is.na(no_consent) & no_consent == TRUE)
+df_clean <- df_clean %>% filter(is.na(no_consent) | no_consent != TRUE)
+
+report("Excluded: no consent", excl)
+report("Remaining", df_clean)
+flow <- bind_rows(
+  flow,
+  count_ids(excl)     %>% mutate(step = "Excluded: no consent", .before = 1),
+  count_ids(df_clean) %>% mutate(step = "Remaining after consent", .before = 1)
+)
+cat("\n")
+
+# Exclude missing ADHD status
+excl <- df_clean %>% filter(!is.na(no_adhd_status) & no_adhd_status == TRUE)
+df_clean <- df_clean %>% filter(is.na(no_adhd_status) | no_adhd_status != TRUE)
+
+report("Excluded: missing ADHD status", excl)
+report("Remaining", df_clean)
+flow <- bind_rows(
+  flow,
+  count_ids(excl)     %>% mutate(step = "Excluded: missing ADHD status", .before = 1),
+  count_ids(df_clean) %>% mutate(step = "Remaining after ADHD status", .before = 1)
+)
+cat("\n")
+
+# Exclude out-of-range age
+excl <- df_clean %>% filter(!is.na(age_out_of_range) & age_out_of_range == TRUE)
+df_clean <- df_clean %>% filter(is.na(age_out_of_range) | age_out_of_range != TRUE)
+
+report("Excluded: out-of-range age", excl)
+report("Remaining", df_clean)
+flow <- bind_rows(
+  flow,
+  count_ids(excl)     %>% mutate(step = "Excluded: out-of-range age", .before = 1),
+  count_ids(df_clean) %>% mutate(step = "Remaining after age", .before = 1)
+)
+
+# Summary table
+print(flow, n = Inf)
+```
+
+### 4.3 Check df
+
+```{r check-df-clean}
+head(df_clean)
+```
+
+## 5. Create versions for descriptives and sensitivity analyses
+
+### 5.1 Derived variables
+
+```{r obs-derived-variables}
+# Scale ranges
+scale_spec <- list(
+  pds_c  = list(items = paste0("pds_c_", 1:5),   min = 1, max = 4),
+  pds_y  = list(items = paste0("pds_y_", 1:5),   min = 1, max = 4),
+  ers_c  = list(items = paste0("ers_c_", 1:21),  min = 0, max = 4),
+  ers_y  = list(items = paste0("ers_y_", 1:21),  min = 0, max = 4),
+  smfq_c = list(items = paste0("smfq_c_", 1:13), min = 0, max = 2),
+  smfq_y = list(items = paste0("smfq_y_", 1:13), min = 0, max = 2),
+  swan_c = list(items = paste0("swan_c_", 1:18), min = -3, max = 3)
+)
+
+# Check 1: all item columns exist and are numeric
+all_items <- unlist(lapply(scale_spec, `[[`, "items"))
+stopifnot(all(all_items %in% names(df_clean)))
+
+non_numeric <- all_items[!sapply(df_clean[all_items], is.numeric)]
+if (length(non_numeric) > 0) {
+  stop("Non-numeric scale items: ", paste(non_numeric, collapse = ", "))
+}
+
+# Check 2: observed range per scale vs expected range
+range_check <- purrr::imap_dfr(scale_spec, function(s, nm) {
+  vals <- unlist(df_clean[s$items])
+  tibble(
+    scale        = nm,
+    expected_min = s$min,
+    expected_max = s$max,
+    observed_min = min(vals, na.rm = TRUE),
+    observed_max = max(vals, na.rm = TRUE),
+    n_out_of_range = sum(vals < s$min | vals > s$max, na.rm = TRUE)
+  )
+})
+print(range_check)
+
+if (any(range_check$n_out_of_range > 0)) {
+  stop("Scale items outside expected range. Check range_check and your coding.")
+}
+
+# Prorated sum: requires >= 80% of items; otherwise NA
+prorated_sum <- function(df, items, threshold = 0.8) {
+  m <- as.matrix(df[items])
+  n_present <- rowSums(!is.na(m))
+  ifelse(
+    n_present / length(items) >= threshold,
+    rowMeans(m, na.rm = TRUE) * length(items),
+    NA_real_
+  )
+}
+
+df_clean <- df_clean %>%
+  mutate(
+    pds_total   = prorated_sum(., scale_spec$pds_c$items),
+    pds_total_y = prorated_sum(., scale_spec$pds_y$items),
+    ers_total   = prorated_sum(., scale_spec$ers_c$items),
+    ers_total_y = prorated_sum(., scale_spec$ers_y$items),
+    smfq_total   = prorated_sum(., scale_spec$smfq_c$items),
+    smfq_total_y = prorated_sum(., scale_spec$smfq_y$items),
+    swan_total  = prorated_sum(., scale_spec$swan_c$items)
+  )
+
+# Check 3: totals fall inside the possible range
+total_check <- tibble(
+  total = c("pds_total", "pds_total_y", "ers_total", "ers_total_y",
+            "smfq_total", "smfq_total_y", "swan_total"),
+  spec  = c("pds_c", "pds_y", "ers_c", "ers_y", "smfq_c", "smfq_y", "swan_c")
+) %>%
+  mutate(
+    lo = map_dbl(spec, ~ scale_spec[[.x]]$min * length(scale_spec[[.x]]$items)),
+    hi = map_dbl(spec, ~ scale_spec[[.x]]$max * length(scale_spec[[.x]]$items)),
+    observed_min = map_dbl(total, ~ min(df_clean[[.x]], na.rm = TRUE)),
+    observed_max = map_dbl(total, ~ max(df_clean[[.x]], na.rm = TRUE)),
+    n_missing    = map_int(total, ~ sum(is.na(df_clean[[.x]])))
+  )
+print(total_check)
+stopifnot(all(total_check$observed_min >= total_check$lo - 1e-8),
+          all(total_check$observed_max <= total_check$hi + 1e-8))
+
+# BMI
+df_clean <- df_clean %>%
+  mutate(
+    height_m = height_c_1 / 100,
+    bmi = weight_c_1 / (height_m^2)
+  )
+
+# Pubertal timing
+pds_model_c <- lm(pds_total ~ age_cont, data = df_clean, na.action = na.exclude)
+df_clean$pubertal_timing <- resid(pds_model_c)
+
+pds_model_y <- lm(pds_total_y ~ age_cont_y, data = df_clean, na.action = na.exclude)
+df_clean$pubertal_timing_y <- resid(pds_model_y)
+```
+
+### 5.2 Standardisation
+
+```{r standardisation}
+continuous_vars <- c(
+  "age_cont",
+  "age_cont_y",
+  "sed_percentile",
+  "bmi",
+  "pds_total",
+  "pds_total_y",
+  "pubertal_timing",
+  "pubertal_timing_y",
+  "menarche_timing",
+  "menarche_timing_y",
+  "ers_total",
+  "ers_total_y",
+  "smfq_total",
+  "smfq_total_y",
+  "swan_total"
+)
+
+for (v in continuous_vars) {
+  if (v %in% names(df_clean)) {
+    sd_v <- sd(df_clean[[v]], na.rm = TRUE)
+    mean_v <- mean(df_clean[[v]], na.rm = TRUE)
+    df_clean[[paste0(v, "_s")]] <- (df_clean[[v]] - mean_v) / (sd_v)
+  }
+}
+
+# Spot checks
+summary(df_clean$pds_total_s)
+mean(df_clean$pds_total_s, na.rm = TRUE)
+sd(df_clean$pds_total_s, na.rm = TRUE)
+summary(df_clean$sed_percentile_s, na.rm = TRUE)
+```
+
+### 5.3 Save descriptives/sensitivity dfs
+
+```{r save-df-descriptives}
+# Split young person and caregiver dfs
+y_clean <- df_clean %>%
+  filter(!is.na(ResponseId_y))
+
+c_clean <- df_clean %>%
+  filter(!is.na(ResponseId_c))
+
+# For descriptives and supplementary/sensitivity analyses
+saveRDS(df_clean, here("Clean Data", "df_clean.rds"))
+saveRDS(c_clean, here("Clean Data", "df_c_clean.rds"))
+saveRDS(y_clean, here("Clean Data", "df_y_clean.rds"))
+```
+
+## 6. Pre-imputation preparation
+
+### 6.1 Select variables for main imputation df
+
+```{r select-impute-variables}
+vars_impute_df <- c(
+  # IDs
+  "ResponseId_c", "LinkCode",
+
+  # Core demographics
+  "age_cont",
+  "gender_c",
+  "ethnicity_culture_c",
+  "sed_percentile",
+  "relationship_c",
+  "weight_c_1", "height_c_1",
+
+  # ADHD
+  "adhd_status",
+  "adhd_med_status",
+
+  # Puberty / menstrual
+  "pds_c_1","pds_c_2","pds_c_3","pds_c_4","pds_c_5",
+  "menarche_timing",
+  "menarche_status",
+  "bc_status",
+
+  # ND, mental health, and health covariates
+  "diagnosis_c",
+  "autism",
+  "other_mental_neuro_c",
+  "other_health_c",
+  "medications_c",
+
+  # Outcomes – caregiver
+  paste0("ers_c_", 1:21),
+  paste0("smfq_c_", 1:13),
+  paste0("swan_c_", 1:18)
+)
+
+df_impute <- c_clean %>%
+  filter(!is.na(ResponseId_c)) %>%
+  select(all_of(vars_impute_df))
+
+nrow(df_impute)
+
+saveRDS(df_impute, here("Imputed Data", "df_impute.rds"))
+```
+
+### 6.2 Select variables for young person imputation df
+
+```{r select-impute-y-variables}
+vars_impute_df_y <- c(
+  # IDs
+  "ResponseId_y", "LinkCode",
+
+  # Core demographics
+  "age_cont_y",
+  "gender_y",
+  "sed_percentile",
+  "weight_c_1", "height_c_1",
+
+  # ADHD
+  "adhd_y",
+  "adhd_med_status",
+
+  # Puberty / menstrual
+  "pds_y_1","pds_y_2","pds_y_3","pds_y_4","pds_y_5",
+  "menarche_timing_y",
+  "menarche_status_y",
+  "bc_status_y",
+
+  # ND, mental health, and health covariates
+  "autism",
+
+  # Outcomes – young person
+  paste0("ers_y_", 1:21),
+  paste0("smfq_y_", 1:13)
+)
+
+df_impute_y <- y_clean %>%
+  filter(!is.na(ResponseId_y)) %>%
+  select(all_of(vars_impute_df_y))
+
+nrow(df_impute_y)
+
+saveRDS(df_impute_y, here("Imputed Data","df_impute_y.rds"))
+```
+
+## 7. Caregiver data missingness checks
+
+### 7.1 Visualise missingness
+
+```{r visualise-missingness}
+df_impute %>% miss_var_summary()
+vis_miss(df_impute)
+gg_miss_var(df_impute)
+gg_miss_upset(df_impute, nsets = 10)
+```
+
+### 7.2 Check menarche missingness
+
+```{r c-menarche-missingness}
+# Structural missingness: menarche timing (post-menarche subgroup only)
+post_menarche_only <- df_impute %>% filter(menarche_status == "Y")
+
+mean(is.na(post_menarche_only$menarche_timing))
+```
+
+### 7.3 Check block missingness 
+
+```{r c-block-missingness}
+# Block missingness in psychological scales and PDS items
+check_block_missingness <- function(df, item_prefix) {
+  items <- df %>% select(starts_with(item_prefix)) %>% names()
+
+  df %>%
+    select(all_of(items)) %>%
+    mutate(n_missing = rowSums(is.na(across(everything()))),
+           n_items   = length(items)) %>%
+    count(n_missing) %>%
+    mutate(scale = item_prefix, n_items_total = length(items))
+}
+
+scales_c <- c("ers_c", "smfq_c", "swan_c", "pds_c")
+map_dfr(scales_c, ~check_block_missingness(df_impute, .x))
+```
+
+### 7.4 Check missing PDS + psych scales
+
+```{r c-pds-missing-also-missing-psych}
+# Confirm participants missing all PDS items also missing all psychological scales
+df_impute %>%
+  mutate(
+    pds_n_missing = rowSums(is.na(select(., starts_with("pds_c_")))),
+    ers_missing   = rowSums(!is.na(select(., starts_with("ers_c_"))))  == 0,
+    smfq_missing  = rowSums(!is.na(select(., starts_with("smfq_c_")))) == 0,
+    swan_missing  = rowSums(!is.na(select(., starts_with("swan_c_")))) == 0
+  ) %>%
+  filter(pds_n_missing == 5) %>%
+  select(ResponseId_c, pds_n_missing, ers_missing, smfq_missing, swan_missing)
+```
+
+### 7.5 Confirm monotone missingness pattern
+
+```{r c-monotone-pattern}
+# Confirm the monotone missingness pattern (order: ERS -> SMFQ -> SWAN)
+# A scale counts as "answered" if any of its items is non-missing
+df_impute <- df_impute %>%
+  mutate(
+    has_ers  = rowSums(!is.na(select(., starts_with("ers_c_"))))  > 0,
+    has_smfq = rowSums(!is.na(select(., starts_with("smfq_c_")))) > 0,
+    has_swan = rowSums(!is.na(select(., starts_with("swan_c_")))) > 0,
+    survey_dropout_point = case_when(
+      has_ers  &  has_smfq &  has_swan ~ "Completed",
+      has_ers  &  has_smfq & !has_swan ~ "Stopped before SWAN",
+      has_ers  & !has_smfq & !has_swan ~ "Stopped before SMFQ",
+      !has_ers & !has_smfq & !has_swan ~ "Stopped before ERS",
+      TRUE                             ~ "Non-monotone"
+    )
+  )
+
+table(df_impute$survey_dropout_point)
+
+if (any(df_impute$survey_dropout_point == "Non-monotone")) {
+  warning("Non-monotone missingness found; inspect these rows.", call. = FALSE)
+}
+
+# Pattern of scales answered (1 = any item answered, 0 = none)
+df_impute %>%
+  count(ERS = as.integer(has_ers),
+        SMFQ = as.integer(has_smfq),
+        SWAN = as.integer(has_swan))
+
+# Explicit monotone checks (both should be 0)
+sum(!df_impute$has_ers  & (df_impute$has_smfq | df_impute$has_swan))
+sum(!df_impute$has_smfq & df_impute$has_swan)
+```
+
+### 7.6 Regression to assess potential for missing at random
+
+```{r c-missingness-relationships}
+check_missingness <- function(df, outcome_var,
+                              predictors = c("age_cont", "sed_percentile",
+                                             "adhd_status", "weight_c_1"),
+                              min_events = 5) {
+
+  predictors <- setdiff(predictors, outcome_var)
+  df <- df %>% mutate(.missing = as.integer(is.na(.data[[outcome_var]])))
+
+  cat(strrep("=", 40), "\n")
+  cat("CAREGIVER MISSINGNESS CHECK:", outcome_var, "\n")
+  cat(strrep("=", 40), "\n")
+
+  # 1. Missingness frequency
+  cat("\nMissingness frequency (0 = observed, 1 = missing):\n")
+  print(table(df$.missing, useNA = "ifany"))
+
+  n_miss <- sum(df$.missing)
+  n_obs  <- sum(df$.missing == 0)
+
+  # 2. Descriptives by missingness
+  is_num    <- vapply(predictors, function(p) is.numeric(df[[p]]), logical(1))
+  num_preds <- predictors[is_num]
+  cat_preds <- predictors[!is_num]
+
+  if (length(num_preds) > 0) {
+    cat("\nNumeric predictors by missingness:\n")
+    df %>%
+      group_by(.missing) %>%
+      summarise(
+        n = n(),
+        across(all_of(num_preds),
+               list(mean = ~mean(.x, na.rm = TRUE),
+                    sd   = ~sd(.x, na.rm = TRUE)),
+               .names = "{.col}_{.fn}"),
+        .groups = "drop"
+      ) %>%
+      print(width = Inf)
+  }
+
+  for (p in cat_preds) {
+    cat("\n", p, "x missingness:\n")
+    print(table(df[[p]], df$.missing, useNA = "ifany"))
+  }
+
+  # 3. Skip the regression if too few cases in either group
+  if (n_miss < min_events || n_obs < min_events) {
+    cat(sprintf(
+      "\nRegression skipped: only %d missing / %d observed (minimum %d each).\n\n",
+      n_miss, n_obs, min_events))
+    return(invisible(NULL))
+  }
+
+  # 4. Logistic regression on complete cases
+  model_df  <- df %>% select(.missing, all_of(predictors)) %>% drop_na()
+  n_dropped <- nrow(df) - nrow(model_df)
+  events    <- sum(model_df$.missing)
+
+  cat(sprintf("\nLogistic regression: %d rows used, %d dropped for missing predictors.\n",
+              nrow(model_df), n_dropped))
+  cat(sprintf("Missing cases in model: %d (%.1f per predictor)\n",
+              events, events / length(predictors)))
+  if (events / length(predictors) < 10) {
+    cat("Note: fewer than 10 events per predictor; estimates may be unstable (exploratory).\n")
+  }
+
+  fit <- tryCatch(
+    withCallingHandlers(
+      glm(reformulate(predictors, response = ".missing"),
+          data = model_df, family = binomial()),
+      warning = function(w) {
+        cat("GLM warning:", conditionMessage(w), "\n")
+        invokeRestart("muffleWarning")
+      }
+    ),
+    error = function(e) {
+      cat("GLM failed:", conditionMessage(e), "\n")
+      NULL
+    }
+  )
+
+  if (!is.null(fit)) print(summary(fit))
+  cat("\n")
+  invisible(fit)
+}
+
+# Caregiver
+check_missingness(df_impute, "ers_c_1")
+check_missingness(df_impute, "smfq_c_1")
+check_missingness(df_impute, "swan_c_1")
+```
+
+## 8. Adolescent self-report missingness checks
+
+### 8.1 Visualise missingness
+
+```{r y-visualise-missingness}
+df_impute_y_missing <- df_impute_y %>%
+  select(all_of(vars_impute_df_y), -weight_c_1, -height_c_1, -sed_percentile, -adhd_med_status, -autism)
+
+df_impute_y_missing %>% miss_var_summary()
+vis_miss(df_impute_y_missing)
+gg_miss_var(df_impute_y_missing)
+gg_miss_upset(df_impute_y_missing, nsets = 10)
+```
+
+### 8.2 Check block missingness
+
+```{r y-block-missingness}
+scales_y <- c("ers_y", "smfq_y")
+map_dfr(scales_y, ~check_block_missingness(df_impute_y, .x))
+```
+
+### 8.3 Regression to assess potential for missing at random
+
+```{r y-missingness-relationships}
+check_missingness_y <- function(df, outcome_var,
+                                predictors = c("age_cont_y", "adhd_y"),
+                                min_events = 5) {
+
+  predictors <- setdiff(predictors, outcome_var)
+  df <- df %>% mutate(.missing = as.integer(is.na(.data[[outcome_var]])))
+
+  cat(strrep("=", 40), "\n")
+  cat("YOUTH MISSINGNESS CHECK:", outcome_var, "\n")
+  cat(strrep("=", 40), "\n")
+
+  # 1. Missingness frequency
+  cat("\nMissingness frequency (0 = observed, 1 = missing):\n")
+  print(table(df$.missing, useNA = "ifany"))
+
+  n_miss <- sum(df$.missing)
+  n_obs  <- sum(df$.missing == 0)
+
+  # 2. Descriptives by missingness
+  is_num    <- vapply(predictors, function(p) is.numeric(df[[p]]), logical(1))
+  num_preds <- predictors[is_num]
+  cat_preds <- predictors[!is_num]
+
+  if (length(num_preds) > 0) {
+    cat("\nNumeric predictors by missingness:\n")
+    df %>%
+      group_by(.missing) %>%
+      summarise(
+        n = n(),
+        across(all_of(num_preds),
+               list(mean = ~mean(.x, na.rm = TRUE),
+                    sd   = ~sd(.x, na.rm = TRUE)),
+               .names = "{.col}_{.fn}"),
+        .groups = "drop"
+      ) %>%
+      print(width = Inf)
+  }
+
+  for (p in cat_preds) {
+    cat("\n", p, "x missingness:\n")
+    print(table(df[[p]], df$.missing, useNA = "ifany"))
+  }
+
+  # 3. Skip the regression if too few cases in either group
+  if (n_miss < min_events || n_obs < min_events) {
+    cat(sprintf(
+      "\nRegression skipped: only %d missing / %d observed (minimum %d each).\n\n",
+      n_miss, n_obs, min_events))
+    return(invisible(NULL))
+  }
+
+  # 4. Logistic regression on complete cases
+  model_df  <- df %>% select(.missing, all_of(predictors)) %>% drop_na()
+  n_dropped <- nrow(df) - nrow(model_df)
+  events    <- sum(model_df$.missing)
+
+  cat(sprintf("\nLogistic regression: %d rows used, %d dropped for missing predictors.\n",
+              nrow(model_df), n_dropped))
+  cat(sprintf("Missing cases in model: %d (%.1f per predictor)\n",
+              events, events / length(predictors)))
+  if (events / length(predictors) < 10) {
+    cat("Note: fewer than 10 events per predictor; estimates may be unstable (exploratory).\n")
+  }
+
+  fit <- tryCatch(
+    withCallingHandlers(
+      glm(reformulate(predictors, response = ".missing"),
+          data = model_df, family = binomial()),
+      warning = function(w) {
+        cat("GLM warning:", conditionMessage(w), "\n")
+        invokeRestart("muffleWarning")
+      }
+    ),
+    error = function(e) {
+      cat("GLM failed:", conditionMessage(e), "\n")
+      NULL
+    }
+  )
+
+  if (!is.null(fit)) print(summary(fit))
+  cat("\n")
+  invisible(fit)
+}
+
+# Youth calls
+for (v in c("ers_y_1", "pds_y_1", "pds_y_2", "pds_y_3", "pds_y_4")) {
+  check_missingness_y(df_impute_y, v)
+}
+```

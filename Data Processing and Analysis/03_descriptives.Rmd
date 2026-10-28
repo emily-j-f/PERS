@@ -1,0 +1,1196 @@
+---
+title: "Puberty & emotional reactivity study descriptives"
+author: "Emily Friedel"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+### Load libraries
+
+```{r libraries}
+library(tidyverse)
+library(psych)
+library(irr)
+library(effectsize)
+library(here)
+```
+
+### Import clean observed data
+
+```{r import-data}
+df_clean <- readRDS(here("Clean Data","df_clean.rds"))
+df_y_clean <- readRDS(here("Clean Data","df_y_clean.rds"))
+df_c_clean <- readRDS(here("Clean Data","df_c_clean.rds"))
+```
+
+### Initial checks
+
+```{r intitial-checks}
+head(df_clean)
+str(df_clean)
+```
+
+### Create folders
+
+```{r folders}
+dir.create(here("Descriptives"), showWarnings = FALSE)
+```
+
+## 1. Participant counts
+
+```{r participant-counts}
+# Total participants after exclusions
+nrow(df_clean)
+nrow(df_c_clean)
+nrow(df_y_clean)
+
+# Count by ADHD status
+cat("\n=== ADHD combined df ===\n")
+table(df_clean$adhd_status, useNA = "ifany")
+
+cat("\n=== ADHD caregiver df ===\n")
+table(df_c_clean$adhd_status, useNA = "ifany")
+
+cat("\n=== ADHD young person df ===\n")
+table(df_y_clean$adhd_y, useNA = "ifany")
+```
+
+## 2. Missingness
+
+### 2.1 Caregiver df missingness
+
+```{r c-missingness}
+# List all variables to check missingness
+missing_vars <- c(
+  "age_cont",
+  "adhd_status",
+  "gender_c", 
+  "pds_total",
+  "pubertal_timing",
+  "menarche_status",
+  "bc_status",
+  "bmi",
+  "sed_percentile",
+  "relationship_c",
+  "ethnicity_culture_c",
+  "diagnosis_c",
+  "adhd_med_status",
+  "other_mental_neuro_c",
+  "other_health_c",
+  "autism",
+  "medications_c",
+  "ers_total",
+  "smfq_total",
+  "swan_total"
+)
+
+# Function to summarise missingness overall + by ADHD status
+summarise_missing <- function(df, var) {
+  
+  # Overall missingness
+  overall <- tibble(
+    Variable = var,
+    Total_Missing = sum(is.na(df[[var]])),
+    Percent_Missing = round(mean(is.na(df[[var]])) * 100, 1)
+  )
+  
+  # Missingness stratified by ADHD status
+  by_adhd <- df %>%
+    filter(!is.na(adhd_status)) %>%
+    mutate(adhd_status = factor(adhd_status, levels = c("N", "Y"))) %>%
+    group_by(adhd_status, .drop = FALSE) %>%                             
+    summarise(
+      Total_Missing = sum(is.na(.data[[var]])),
+      Percent_Missing = round(mean(is.na(.data[[var]])) * 100, 1),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from = adhd_status,
+      values_from = c(Total_Missing, Percent_Missing),
+      names_glue = "{.value}_{adhd_status}"
+    )
+  
+  # Safety net: fill in any expected columns that still don't exist
+  expected_cols <- c("Total_Missing_N", "Percent_Missing_N",
+                      "Total_Missing_Y", "Percent_Missing_Y")
+  missing_cols <- setdiff(expected_cols, names(by_adhd))
+  if (length(missing_cols) > 0) {
+    by_adhd[missing_cols] <- NA
+  }
+  
+  bind_cols(overall, by_adhd)
+}
+
+# Apply function to all variables
+missing_summary_c <- lapply(missing_vars, function(v) summarise_missing(df_c_clean, v)) %>%
+  bind_rows()
+
+# Reorder columns for readability
+missing_summary_c <- missing_summary_c %>%
+  select(
+    Variable,
+    Total_Missing, Percent_Missing,
+    Total_Missing_N, Percent_Missing_N,
+    Total_Missing_Y, Percent_Missing_Y
+  )
+
+# Restrict to post-menarche participants for menarche_timing
+post_menarche_only <- df_c_clean %>%
+  filter(menarche_status == "Y")
+
+# Run the same function on the post-menarche subset
+menarche_timing_summary <- summarise_missing(post_menarche_only, "menarche_timing") %>%
+  select(
+    Variable,
+    Total_Missing, Percent_Missing,
+    Total_Missing_N, Percent_Missing_N,
+    Total_Missing_Y, Percent_Missing_Y
+  )
+
+# Append the menarche row to the main table
+missing_summary_c <- bind_rows(missing_summary_c, menarche_timing_summary)
+
+print(missing_summary_c, n = Inf)
+
+# Export
+write_csv(missing_summary_c, here("Descriptives", "missingness_table_c.csv"))
+```
+
+### 2.2 Young people df missingness
+
+```{r y-missingness}
+# List all variables to check missingness
+missing_vars_y <- c(
+  "age_cont_y",
+  "adhd_y", 
+  "gender_y", 
+  "pds_total_y",
+  "pubertal_timing_y",
+  "menarche_status_y",
+  "menarche_timing_y",
+  "bc_status_y",
+  "ers_total_y",
+  "smfq_total_y"
+)
+
+# Function to summarise missingness overall + by ADHD status
+summarise_missing_y <- function(df, var) {
+  
+  # Overall missingness
+  overall <- tibble(
+    Variable = var,
+    Total_Missing = sum(is.na(df[[var]])),
+    Percent_Missing = round(mean(is.na(df[[var]])) * 100, 1)
+  )
+  
+  # Missingness stratified by ADHD status
+  by_adhd <- df %>%
+    filter(!is.na(adhd_y)) %>%
+    mutate(adhd_y = factor(adhd_y, levels = c("N", "Y"))) %>%  
+    group_by(adhd_y, .drop = FALSE) %>%                        
+    summarise(
+      Total_Missing = sum(is.na(.data[[var]])),
+      Percent_Missing = round(mean(is.na(.data[[var]])) * 100, 1),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from = adhd_y,
+      values_from = c(Total_Missing, Percent_Missing),
+      names_glue = "{.value}_{adhd_y}"
+    )
+  
+  # Safety net: fill in any columns still missing (e.g. if a group has 0 rows entirely)
+  expected_cols <- c("Total_Missing_N", "Percent_Missing_N",
+                     "Total_Missing_Y", "Percent_Missing_Y")
+  missing_cols <- setdiff(expected_cols, names(by_adhd))
+  if (length(missing_cols) > 0) {
+    by_adhd[missing_cols] <- NA
+  }
+  
+  bind_cols(overall, by_adhd)
+}
+
+# Apply function to all variables across the full sample
+missing_summary_y <- lapply(missing_vars_y, function(v) summarise_missing_y(df_y_clean, v)) %>%
+  bind_rows()
+
+# Reorder columns for readability
+missing_summary_y <- missing_summary_y %>%
+  select(
+    Variable,
+    Total_Missing, Percent_Missing,
+    Total_Missing_N, Percent_Missing_N,
+    Total_Missing_Y, Percent_Missing_Y
+  )
+
+# Restrict to post-menarche participants for menarche_timing_y
+post_menarche_only_y <- df_y_clean %>%
+  filter(menarche_status_y == "Y")
+
+# Run the same function on the post-menarche subset
+menarche_timing_summary_y <- summarise_missing_y(post_menarche_only_y, "menarche_timing_y") %>%
+  select(
+    Variable,
+    Total_Missing, Percent_Missing,
+    Total_Missing_N, Percent_Missing_N,
+    Total_Missing_Y, Percent_Missing_Y
+  )
+
+# Append the post-menarche row to the main table
+missing_summary_y <- bind_rows(missing_summary_y, menarche_timing_summary_y)
+
+missing_summary_y
+
+# Export
+write_csv(missing_summary_y, here("Descriptives", "missingness_table_y.csv"))
+```
+
+## 3. Distributions 
+
+### 3.1 Histograms whole sample
+
+```{r histograms-whole-sample}
+continuous_vars_hist_c <- c(
+  "age_cont", "bmi", "sed_percentile", "pds_total", "pubertal_timing",
+  "menarche_timing", "ers_total", "smfq_total", "swan_total"
+)
+
+continuous_vars_hist_y <- c(
+  "age_cont_y", "pds_total_y", "pubertal_timing_y",
+  "menarche_timing_y", "ers_total_y", "smfq_total_y"
+)
+
+# Helper: one histogram per variable, optionally filled by a grouping variable
+plot_histograms <- function(df, vars, group_var = NULL, subtitle = NULL) {
+  
+  if (!is.null(group_var)) {
+    df <- df %>%
+      filter(!is.na(.data[[group_var]])) %>%
+      mutate(group = factor(.data[[group_var]],
+                            levels = c("N", "Y"),
+                            labels = c("Non-ADHD", "ADHD")))
+  }
+  
+  for (var in vars) {
+    
+    if (!(var %in% names(df))) {
+      warning(var, " not found in data frame, skipping.", call. = FALSE)
+      next
+    }
+    
+    n_obs <- sum(!is.na(df[[var]]))
+    
+    if (is.null(group_var)) {
+      p <- ggplot(df, aes(x = .data[[var]])) +
+        geom_histogram(bins = 10, color = "black", alpha = 0.6)
+    } else {
+      p <- ggplot(df, aes(x = .data[[var]], fill = group)) +
+        geom_histogram(bins = 10, color = "black", alpha = 0.6,
+                       position = "identity") +
+        scale_fill_manual(values = c("Non-ADHD" = "#1f78b4", "ADHD" = "#e31a1c")) +
+        labs(fill = "ADHD status")
+    }
+    
+    p <- p +
+      theme_bw() +
+      labs(
+        x = var,
+        y = "Count",
+        title = paste("Histogram of", var),
+        subtitle = paste0(subtitle, " (n = ", n_obs, ")")
+      )
+    
+    print(p)
+  }
+}
+
+# Caregiver report
+plot_histograms(df_c_clean, continuous_vars_hist_c, subtitle = "Caregiver sample")
+
+# Young person report
+plot_histograms(df_y_clean, continuous_vars_hist_y, subtitle = "Young person sample")
+```
+
+### 3.2 Histograms by ADHD status
+
+```{r histograms-by-adhd}
+plot_hist_by_adhd <- function(df, vars, adhd_var, label) {
+
+  # Convert ADHD to factor
+  df_plot <- df %>%
+    filter(!is.na(.data[[adhd_var]])) %>%
+    mutate(adhd_group = factor(.data[[adhd_var]],
+                               levels = c("N", "Y"),
+                               labels = c("Non-ADHD", "ADHD")))
+
+  for (var in vars) {
+
+    if (!(var %in% names(df_plot))) {
+      warning(var, " not found in data frame, skipping.", call. = FALSE)
+      next
+    }
+
+    # n per group, shown in the subtitle
+    n_by_group <- df_plot %>%
+      filter(!is.na(.data[[var]])) %>%
+      count(adhd_group, .drop = FALSE)
+    n_label <- paste0(n_by_group$adhd_group, " n = ", n_by_group$n, collapse = ", ")
+
+    p <- ggplot(df_plot, aes(x = .data[[var]], fill = adhd_group)) +
+      geom_histogram(alpha = 0.6, position = "identity", bins = 10, color = "black") +
+      scale_fill_manual(values = c("Non-ADHD" = "#1f78b4", "ADHD" = "#e31a1c")) +
+      theme_bw() +
+      labs(
+        x = var,
+        y = "Count",
+        fill = "ADHD Status",
+        title = paste("Histogram of", var, "by ADHD status"),
+        subtitle = paste0(label, " (", n_label, ")")
+      )
+
+    print(p)
+  }
+}
+
+# Caregiver report, split by caregiver-reported ADHD
+plot_hist_by_adhd(df_c_clean, continuous_vars_hist_c,
+                  adhd_var = "adhd_status", label = "Caregiver sample")
+
+# Young person report, split by young person-reported ADHD
+plot_hist_by_adhd(df_y_clean, continuous_vars_hist_y,
+                  adhd_var = "adhd_y", label = "Young person sample")
+```
+
+## 4. Descriptives tables
+
+### 4.1 Caregiver continuous variables descriptives
+
+```{r c-cont-descriptives}
+continuous_vars_c <- c(
+  "age_cont",
+  "bmi",
+  "sed_percentile",
+  "pds_total",
+  "pubertal_timing",
+  "menarche_timing",
+  "ers_total",
+  "smfq_total",
+  "swan_total"
+)
+
+# Function to summarise a variable
+summarise_cont <- function(df, var) {
+  x <- df[[var]]
+  x <- x[!is.na(x)]
+  
+  if(length(x) == 0) {
+    tibble(
+      N = 0,
+      Range = NA_character_,
+      Mean_SD = NA_character_
+    )
+  } else {
+    tibble(
+      N = length(x),
+      Range = paste0(round(min(x), 2), "–", round(max(x), 2)),
+      Mean_SD = paste0(round(mean(x), 2), " (", round(sd(x), 2), ")")
+    )
+  }
+}
+
+# Build table for full sample, non-ADHD, and ADHD
+continuous_table <- lapply(continuous_vars_c, function(var) {
+  full     <- summarise_cont(df_c_clean, var)
+  non_adhd <- summarise_cont(df_c_clean %>% filter(adhd_status == "N"), var)
+  adhd     <- summarise_cont(df_c_clean %>% filter(adhd_status == "Y"), var)
+  
+  tibble(
+    Variable = var,
+    N_full = full$N,
+    Range_full = full$Range, Mean_SD_full = full$Mean_SD,
+    N_nonADHD = non_adhd$N,
+    Range_nonADHD = non_adhd$Range, Mean_SD_nonADHD = non_adhd$Mean_SD,
+    N_ADHD = adhd$N,
+    Range_ADHD = adhd$Range, Mean_SD_ADHD = adhd$Mean_SD
+  )
+}) %>% bind_rows()
+
+# Welch tests table (all differences are ADHD minus Non-ADHD)
+welch_tests <- lapply(continuous_vars_c, function(var) {
+  
+  # Filter once: single source of truth for both tests below
+  df_var <- df_c_clean %>%
+    filter(!is.na(.data[[var]]), !is.na(adhd_status)) %>%
+    transmute(
+      value = .data[[var]],
+      group = factor(adhd_status, levels = c("Y", "N"))  # ADHD first
+    )
+  
+  # Need at least 2 observations in each group
+  if (any(table(df_var$group) < 2)) {
+    return(tibble(Variable = var, n = nrow(df_var)))
+  }
+  
+  t_test <- t.test(value ~ group, data = df_var, var.equal = FALSE)
+  d_result <- cohens_d(value ~ group, data = df_var, pooled_sd = TRUE)
+  
+  tibble(
+    Variable  = var,
+    n         = nrow(df_var),
+    t         = unname(t_test$statistic),
+    df        = unname(t_test$parameter),
+    p_value   = t_test$p.value,
+    mean_diff = unname(t_test$estimate[1] - t_test$estimate[2]),
+    diff_lower = t_test$conf.int[1],
+    diff_upper = t_test$conf.int[2],
+    cohens_d  = d_result$Cohens_d,
+    d_lower   = d_result$CI_low,
+    d_upper   = d_result$CI_high
+  )
+}) %>% bind_rows()
+
+# Helper to format p-values APA style
+format_p <- function(p) {
+  case_when(
+    is.na(p)  ~ NA_character_,
+    p < 0.001 ~ "< .001",
+    TRUE      ~ sub("^0", "", sprintf("%.3f", p))
+  )
+}
+
+welch_tests <- welch_tests %>%
+  mutate(
+    p_raw      = p_value,
+    p_fmt      = format_p(p_value),
+    t          = round(t, 2),
+    df         = round(df, 1),
+    mean_diff  = round(mean_diff, 2),
+    diff_lower = round(diff_lower, 2),
+    diff_upper = round(diff_upper, 2),
+    cohens_d   = round(cohens_d, 2),
+    d_lower    = round(d_lower, 2),
+    d_upper    = round(d_upper, 2),
+    # Combined strings for a publication-style table
+    Mean_diff_CI = paste0(mean_diff, " [", diff_lower, ", ", diff_upper, "]"),
+    d_CI         = paste0(cohens_d, " [", d_lower, ", ", d_upper, "]"),
+    Welch_t      = paste0("t(", df, ") = ", t)
+  )
+
+welch_tests
+
+# Join the two tables
+continuous_table_full <- continuous_table %>%
+  left_join(welch_tests, by = "Variable") %>%
+  select(Variable,
+         N_full, Range_full, Mean_SD_full,
+         N_nonADHD, Range_nonADHD, Mean_SD_nonADHD,
+         N_ADHD, Range_ADHD, Mean_SD_ADHD,
+         Welch_t, p = p_fmt, p_raw,
+         Mean_diff_CI, d_CI)
+
+# head table
+head(continuous_table_full)
+
+# Export
+write_csv(continuous_table_full, here("Descriptives", "continuous_table_with_welch.csv"))
+```
+
+### 4.2 Young person continuous variables descriptives
+
+```{r y-cont-descriptives}
+continuous_vars_y <- c(
+  "age_cont_y",
+  "pds_total_y",
+  "pubertal_timing_y",
+  "menarche_timing_y",
+  "ers_total_y",
+  "smfq_total_y"
+)
+
+# Function to summarise a variable
+summarise_cont <- function(df, var) {
+  x <- df[[var]]
+  x <- x[!is.na(x)]
+  
+  if(length(x) == 0) {
+    tibble(
+      N = 0,
+      Range = NA_character_,
+      Mean_SD = NA_character_
+    )
+  } else {
+    tibble(
+      N = length(x),
+      Range = paste0(round(min(x), 2), "–", round(max(x), 2)),
+      Mean_SD = paste0(round(mean(x), 2), " (", round(sd(x), 2), ")")
+    )
+  }
+}
+
+# Build table for full sample, non-ADHD, and ADHD
+continuous_table_y <- lapply(continuous_vars_y, function(var) {
+  full     <- summarise_cont(df_y_clean, var)
+  non_adhd <- summarise_cont(df_y_clean %>% filter(adhd_y == "N"), var)
+  adhd     <- summarise_cont(df_y_clean %>% filter(adhd_y == "Y"), var)
+  
+  tibble(
+    Variable = var,
+    N_full = full$N,
+    Range_full = full$Range, Mean_SD_full = full$Mean_SD,
+    N_nonADHD = non_adhd$N,
+    Range_nonADHD = non_adhd$Range, Mean_SD_nonADHD = non_adhd$Mean_SD,
+    N_ADHD = adhd$N,
+    Range_ADHD = adhd$Range, Mean_SD_ADHD = adhd$Mean_SD
+  )
+}) %>% bind_rows()
+
+# Welch tests table (all differences are ADHD minus Non-ADHD)
+welch_tests_y <- lapply(continuous_vars_y, function(var) {
+  
+  # Filter once: single source of truth for both tests below
+  df_var <- df_y_clean %>%
+    filter(!is.na(.data[[var]]), !is.na(adhd_y)) %>%
+    transmute(
+      value = .data[[var]],
+      group = factor(adhd_y, levels = c("Y", "N"))  # ADHD first
+    )
+  
+  # Need at least 2 observations in each group
+  if (any(table(df_var$group) < 2)) {
+    return(tibble(Variable = var, n = nrow(df_var)))
+  }
+  
+  t_test <- t.test(value ~ group, data = df_var, var.equal = FALSE)
+  d_result <- cohens_d(value ~ group, data = df_var, pooled_sd = TRUE)
+  
+  tibble(
+    Variable   = var,
+    n          = nrow(df_var),
+    t          = unname(t_test$statistic),
+    df         = unname(t_test$parameter),
+    p_value    = t_test$p.value,
+    mean_diff  = unname(t_test$estimate[1] - t_test$estimate[2]),
+    diff_lower = t_test$conf.int[1],
+    diff_upper = t_test$conf.int[2],
+    cohens_d   = d_result$Cohens_d,
+    d_lower    = d_result$CI_low,
+    d_upper    = d_result$CI_high
+  )
+}) %>% bind_rows()
+
+# Helper to format p-values APA style
+format_p <- function(p) {
+  case_when(
+    is.na(p)  ~ NA_character_,
+    p < 0.001 ~ "< .001",
+    TRUE      ~ sub("^0", "", sprintf("%.3f", p))
+  )
+}
+
+welch_tests_y <- welch_tests_y %>%
+  mutate(
+    p_raw      = p_value,
+    p_fmt      = format_p(p_value),
+    t          = round(t, 2),
+    df         = round(df, 1),
+    mean_diff  = round(mean_diff, 2),
+    diff_lower = round(diff_lower, 2),
+    diff_upper = round(diff_upper, 2),
+    cohens_d   = round(cohens_d, 2),
+    d_lower    = round(d_lower, 2),
+    d_upper    = round(d_upper, 2),
+    # Combined strings for a publication-style table
+    Mean_diff_CI = paste0(mean_diff, " [", diff_lower, ", ", diff_upper, "]"),
+    d_CI         = paste0(cohens_d, " [", d_lower, ", ", d_upper, "]"),
+    Welch_t      = paste0("t(", df, ") = ", t)
+  )
+
+welch_tests_y
+
+# Join the two tables
+continuous_table_full_y <- continuous_table_y %>%
+  left_join(welch_tests_y, by = "Variable") %>%
+  select(Variable,
+         N_full, Range_full, Mean_SD_full,
+         N_nonADHD, Range_nonADHD, Mean_SD_nonADHD,
+         N_ADHD, Range_ADHD, Mean_SD_ADHD,
+         Welch_t, p = p_fmt, p_raw,
+         Mean_diff_CI, d_CI)
+
+# head table
+head(continuous_table_full_y)
+
+# Export
+write_csv(continuous_table_full_y, here("Descriptives", "continuous_table_with_welch_y.csv"))
+```
+
+### 4.3 Caregiver categorical variables descriptives
+
+```{r c-cat-vars-descriptives}
+var_levels <- list(
+  gender_c = c("girl", "boy", "trans_diverse", "non_binary", "prefer_not", "self_describe"),
+  
+  ethnicity_culture_c = c("aboriginal_tsi", "anglo_euro", "e_se_sian", "s_asian_middle_eastern", 
+                          "ss_african", "multiple", "other"),
+  
+  relationship_c = c("mother_stepmother", "father_stepfather", "grandparent", "other_relative", 
+                     "foster_carer", "legal_guardian_non_relative", "other"),
+  
+  diagnosis_c = c("paed_psychiatrist", "psychologist", "self_identified", "suspected", "other"),
+  
+  menarche_status = c("N", "Y"),
+  other_mental_neuro_c = c("N", "Y"),
+  autism = c("N", "Y"),
+  other_health_c = c("N", "Y"),
+  adhd_med_status = c("N", "Y"),
+  bc_status = c("N", "Y"),
+  medications_c = c("N", "Y")
+)
+
+# Safety check: make sure no real values would be converted to NA
+check_levels <- function(df, levels_list) {
+  
+  problems <- lapply(names(levels_list), function(var) {
+    
+    if (!(var %in% names(df))) {
+      return(tibble(Variable = var, Unexpected_value = "<column not found>", n = NA_integer_))
+    }
+    
+    observed <- as.character(df[[var]])
+    bad <- observed[!is.na(observed) & !(observed %in% levels_list[[var]])]
+    
+    if (length(bad) == 0) return(NULL)
+    
+    tibble(Variable = var, Unexpected_value = bad) %>%
+      count(Variable, Unexpected_value)
+  }) %>% bind_rows()
+  
+  if (nrow(problems) > 0) {
+    print(problems, n = Inf)
+    stop("Some values in the data are not in the expected levels and would be ",
+         "converted to NA. Fix the data or update the levels list (see table above).",
+         call. = FALSE)
+  }
+  
+  message("Level check passed: all non-missing values match the expected levels.")
+  invisible(TRUE)
+}
+
+check_levels(df_c_clean, var_levels)
+
+categorical_vars <- names(var_levels)
+
+categorical_table <- lapply(categorical_vars, function(var) {
+  
+  if (!(var %in% names(df_c_clean))) return(NULL)
+  
+  lv <- var_levels[[var]]
+
+  # "Missing" becomes an explicit level, so it is counted and gets a percentage.
+  # check_levels() has already run, so any NA here is a genuine missing value.
+  x <- df_c_clean %>%
+    mutate(
+      Level = factor(replace_na(as.character(.data[[var]]), "Missing"),
+                     levels = c(lv, "Missing")),
+      adhd_status = factor(adhd_status, levels = c("N", "Y"))
+    )
+
+  # Full sample (percentages out of total sample, including missing)
+  full_df <- x %>%
+    count(Level, .drop = FALSE) %>%
+    mutate(
+      Perc_full = if (sum(n) == 0) 0 else round(100 * n / sum(n), 1),
+      Full = paste0(n, " (", Perc_full, "%)")
+    ) %>%
+    select(Level, Full)
+
+  # ADHD split (percentages out of each ADHD group's total, including missing)
+  adhd_df <- x %>%
+    filter(!is.na(adhd_status)) %>%
+    count(adhd_status, Level, .drop = FALSE) %>%
+    group_by(adhd_status) %>%
+    mutate(
+      Perc  = if (sum(n) == 0) 0 else round(100 * n / sum(n), 1),
+      Value = paste0(n, " (", Perc, "%)")
+    ) %>%
+    ungroup() %>%
+    select(Level, adhd_status, Value) %>%
+    pivot_wider(names_from = adhd_status, values_from = Value,
+                values_fill = "0 (0%)")
+
+  # Safety net: ensure both N and Y columns exist
+  for (col in setdiff(c("N", "Y"), names(adhd_df))) adhd_df[[col]] <- "0 (0%)"
+
+  # Return value (levels stay in the order of var_levels, with Missing last)
+  full_df %>%
+    left_join(adhd_df, by = "Level") %>%
+    mutate(Variable = var, Level = as.character(Level)) %>%
+    select(Variable, Level, Full, N, Y)
+  
+}) %>% bind_rows()
+
+head(categorical_table)
+
+write_csv(categorical_table, here("Descriptives", "descriptives_categorical.csv"))
+```
+
+### 4.4 Caregiver categorical group differences
+
+```{r c-cat-group-diffs}
+# Helper to format p-values
+format_p <- function(p) {
+  case_when(
+    is.na(p)  ~ NA_character_,
+    p < 0.001 ~ "< .001",
+    TRUE      ~ sub("^0", "", sprintf("%.3f", p))
+  )
+}
+
+categorical_tests <- lapply(categorical_vars, function(var) {
+
+  empty_row <- function(test_label) {
+    tibble(Variable = var, Test = test_label, n = NA_integer_,
+           Statistic = NA_real_, df = NA_real_, p_value = NA_real_,
+           Cramers_V = NA_real_)
+  }
+
+  if (!(var %in% names(df_c_clean))) return(empty_row("Column not found"))
+
+  df_test <- df_c_clean %>%
+    filter(!is.na(.data[[var]]), !is.na(adhd_status)) %>%
+    select(adhd_status, all_of(var))
+
+  tab <- table(df_test$adhd_status, df_test[[var]])
+
+  # Drop empty rows/columns (e.g. unused factor levels)
+  tab <- tab[rowSums(tab) > 0, colSums(tab) > 0, drop = FALSE]
+
+  if (nrow(tab) < 2 || ncol(tab) < 2) return(empty_row("Not testable"))
+
+  tryCatch({
+    n_total  <- sum(tab)
+    expected <- suppressWarnings(chisq.test(tab, correct = FALSE)$expected)
+
+    # 2x2: Fisher if any expected < 5
+    # Larger tables: Fisher if any expected < 1 or > 20% of cells < 5 (Cochran's rule)
+    use_fisher <- if (nrow(tab) == 2 && ncol(tab) == 2) {
+      any(expected < 5)
+    } else {
+      any(expected < 1) || mean(expected < 5) > 0.2
+    }
+
+    # Cramer's V from the uncorrected chi-squared statistic
+    chisq_stat <- unname(suppressWarnings(chisq.test(tab, correct = FALSE)$statistic))
+    cramers_v  <- sqrt(chisq_stat / (n_total * (min(nrow(tab), ncol(tab)) - 1)))
+
+    if (use_fisher) {
+      # Exact test; fall back to a simulated p-value if the workspace is too small
+      fisher_label <- "Fisher's exact"
+      test <- tryCatch(
+        fisher.test(tab, workspace = 2e7),
+        error = function(e) {
+          fisher_label <<- "Fisher's exact (simulated p)"
+          set.seed(123)
+          fisher.test(tab, simulate.p.value = TRUE, B = 1e5)
+        }
+      )
+      tibble(Variable = var, Test = fisher_label, n = n_total,
+             Statistic = NA_real_, df = NA_real_,
+             p_value = test$p.value, Cramers_V = round(cramers_v, 2))
+    } else {
+      test <- chisq.test(tab, correct = FALSE)
+      tibble(Variable = var, Test = "Chi-squared", n = n_total,
+             Statistic = round(unname(test$statistic), 2),
+             df = unname(test$parameter),
+             p_value = test$p.value, Cramers_V = round(cramers_v, 2))
+    }
+  }, error = function(e) {
+    warning(sprintf("%s: test failed with error \"%s\" — check this variable's table manually.",
+                    var, conditionMessage(e)), call. = FALSE)
+    empty_row("Error")
+  })
+}) %>% bind_rows() %>%
+  mutate(
+    p_raw = p_value,
+    p     = format_p(p_value)
+  ) %>%
+  select(Variable, Test, n, Statistic, df, p, Cramers_V, p_raw)
+
+categorical_tests
+```
+
+### 4.5 Young person categorical variables descriptives
+
+```{r y-cat-vars-descriptives}
+var_levels_y <- list(
+  gender_y = c("girl", "boy", "trans_diverse", "non_binary", "prefer_not", "self_describe"),
+  menarche_status_y = c("N", "Y"),
+  bc_status_y = c("N", "Y")
+)
+
+# Safety check: make sure no real values would be converted to NA
+check_levels <- function(df, levels_list) {
+  
+  problems <- lapply(names(levels_list), function(var) {
+    
+    if (!(var %in% names(df))) {
+      return(tibble(Variable = var, Unexpected_value = "<column not found>", n = NA_integer_))
+    }
+    
+    observed <- as.character(df[[var]])
+    bad <- observed[!is.na(observed) & !(observed %in% levels_list[[var]])]
+    
+    if (length(bad) == 0) return(NULL)
+    
+    tibble(Variable = var, Unexpected_value = bad) %>%
+      count(Variable, Unexpected_value)
+  }) %>% bind_rows()
+  
+  if (nrow(problems) > 0) {
+    print(problems, n = Inf)
+    stop("Some values in the data are not in the expected levels and would be ",
+         "converted to NA. Fix the data or update the levels list (see table above).",
+         call. = FALSE)
+  }
+  
+  message("Level check passed: all non-missing values match the expected levels.")
+  invisible(TRUE)
+}
+
+check_levels(df_y_clean, var_levels_y)
+
+categorical_vars_y <- names(var_levels_y)
+
+categorical_table_y <- lapply(categorical_vars_y, function(var) {
+  
+  if (!(var %in% names(df_y_clean))) return(NULL)
+  
+  lv <- var_levels_y[[var]]
+
+  # "Missing" becomes an explicit level, so it is counted and gets a percentage.
+  # check_levels() has already run, so any NA here is a genuine missing value.
+  x <- df_y_clean %>%
+    mutate(
+      Level = factor(replace_na(as.character(.data[[var]]), "Missing"),
+                     levels = c(lv, "Missing")),
+      adhd_y = factor(adhd_y, levels = c("N", "Y"))
+    )
+
+  # Full sample (percentages out of total sample, including missing)
+  full_df_y <- x %>%
+    count(Level, .drop = FALSE) %>%
+    mutate(
+      Perc_full = if (sum(n) == 0) 0 else round(100 * n / sum(n), 1),
+      Full = paste0(n, " (", Perc_full, "%)")
+    ) %>%
+    select(Level, Full)
+
+  # ADHD split (percentages out of each ADHD group's total, including missing)
+  adhd_df_y <- x %>%
+    filter(!is.na(adhd_y)) %>%
+    count(adhd_y, Level, .drop = FALSE) %>%
+    group_by(adhd_y) %>%
+    mutate(
+      Perc  = if (sum(n) == 0) 0 else round(100 * n / sum(n), 1),
+      Value = paste0(n, " (", Perc, "%)")
+    ) %>%
+    ungroup() %>%
+    select(Level, adhd_y, Value) %>%
+    pivot_wider(names_from = adhd_y, values_from = Value,
+                values_fill = "0 (0%)")
+
+  # Safety net: ensure both N and Y columns exist
+  for (col in setdiff(c("N", "Y"), names(adhd_df_y))) adhd_df_y[[col]] <- "0 (0%)"
+
+  # Return value (levels stay in the order of var_levels_y, with Missing last)
+  full_df_y %>%
+    left_join(adhd_df_y, by = "Level") %>%
+    mutate(Variable = var, Level = as.character(Level)) %>%
+    select(Variable, Level, Full, N, Y)
+  
+}) %>% bind_rows()
+
+head(categorical_table_y)
+
+write_csv(categorical_table_y, here("Descriptives", "descriptives_categorical_y.csv"))
+```
+
+### 4.6 Young Person categorical group differences
+
+```{r y-cat-group-diffs}
+# Helper to format p-values APA style
+format_p <- function(p) {
+  case_when(
+    is.na(p)  ~ NA_character_,
+    p < 0.001 ~ "< .001",
+    TRUE      ~ sub("^0", "", sprintf("%.3f", p))
+  )
+}
+
+categorical_tests_y <- lapply(categorical_vars_y, function(var) {
+
+  empty_row <- function(test_label) {
+    tibble(Variable = var, Test = test_label, n = NA_integer_,
+           Statistic = NA_real_, df = NA_real_, p_value = NA_real_,
+           Cramers_V = NA_real_)
+  }
+
+  if (!(var %in% names(df_y_clean))) return(empty_row("Column not found"))
+
+  df_test_y <- df_y_clean %>%
+    filter(!is.na(.data[[var]]), !is.na(adhd_y)) %>%
+    select(adhd_y, all_of(var))
+
+  tab_y <- table(df_test_y$adhd_y, df_test_y[[var]])
+
+  # Drop empty rows/columns (e.g. unused factor levels), which would
+  # otherwise give expected counts of 0 and NaN statistics
+  tab_y <- tab_y[rowSums(tab_y) > 0, colSums(tab_y) > 0, drop = FALSE]
+
+  if (nrow(tab_y) < 2 || ncol(tab_y) < 2) return(empty_row("Not testable"))
+
+  tryCatch({
+    n_total  <- sum(tab_y)
+    chisq_res <- suppressWarnings(chisq.test(tab_y, correct = FALSE))
+    expected  <- chisq_res$expected
+
+    # 2x2: Fisher if any expected < 5
+    # Larger tables: Fisher if any expected < 1 or > 20% of cells < 5 (Cochran's rule)
+    use_fisher <- if (nrow(tab_y) == 2 && ncol(tab_y) == 2) {
+      any(expected < 5)
+    } else {
+      any(expected < 1) || mean(expected < 5) > 0.2
+    }
+
+    # Cramer's V from the uncorrected chi-squared statistic
+    chisq_stat <- unname(chisq_res$statistic)
+    cramers_v  <- sqrt(chisq_stat / (n_total * (min(nrow(tab_y), ncol(tab_y)) - 1)))
+
+    if (use_fisher) {
+      # Exact test; fall back to a simulated p-value if the workspace is too small
+      fisher_label <- "Fisher's exact"
+      test <- tryCatch(
+        fisher.test(tab_y, workspace = 2e7),
+        error = function(e) {
+          fisher_label <<- "Fisher's exact (simulated p)"
+          set.seed(123)
+          fisher.test(tab_y, simulate.p.value = TRUE, B = 1e5)
+        }
+      )
+      tibble(Variable = var, Test = fisher_label, n = n_total,
+             Statistic = NA_real_, df = NA_real_,
+             p_value = test$p.value, Cramers_V = round(cramers_v, 2))
+    } else {
+      tibble(Variable = var, Test = "Chi-squared", n = n_total,
+             Statistic = round(chisq_stat, 2),
+             df = unname(chisq_res$parameter),
+             p_value = chisq_res$p.value, Cramers_V = round(cramers_v, 2))
+    }
+  }, error = function(e) {
+    warning(sprintf("%s: test failed with error \"%s\" — check this variable's table manually.",
+                    var, conditionMessage(e)), call. = FALSE)
+    empty_row("Error")
+  })
+}) %>% bind_rows() %>%
+  mutate(
+    p_raw = p_value,
+    p     = format_p(p_value)
+  ) %>%
+  select(Variable, Test, n, Statistic, df, p, Cramers_V, p_raw)
+
+categorical_tests_y
+```
+
+## 5. Psychometrics
+
+### 5.1 Caregiver/young person agreement
+
+```{r informant-agreement}
+# Cohen's kappa for binary variables
+kappa_pairs <- list(
+  menarche_status = c("menarche_status", "menarche_status_y"),
+  adhd_status     = c("adhd_c", "adhd_y")
+)
+
+kappa_results <- lapply(names(kappa_pairs), function(name) {
+  vars <- kappa_pairs[[name]]
+  
+  if (!all(vars %in% names(df_clean))) {
+    warning(name, ": column(s) not found: ",
+            paste(setdiff(vars, names(df_clean)), collapse = ", "), call. = FALSE)
+    return(NULL)
+  }
+  
+  df_pair <- df_clean %>%
+    select(all_of(vars)) %>%
+    drop_na()
+  
+  # Force identical levels so kappa isn't thrown off by a missing category
+  lv <- c("N", "Y")
+  df_pair[] <- lapply(df_pair, factor, levels = lv)
+  
+  k <- kappa2(df_pair)
+  
+  tibble(
+    Variable = name,
+    n        = k$subjects,
+    Kappa    = round(k$value, 2),
+    z        = round(k$statistic, 2),
+    p_value  = signif(k$p.value, 3)
+  )
+}) %>% bind_rows()
+
+kappa_results
+
+
+# ICC for continuous variables
+icc_pairs <- list(
+  menarche_timing = c("menarche_timing", "menarche_timing_y"),
+  pds_total       = c("pds_total", "pds_total_y"),
+  ers_total       = c("ers_total", "ers_total_y"),
+  smfq_total      = c("smfq_total", "smfq_total_y")
+)
+
+icc_results <- lapply(names(icc_pairs), function(name) {
+  vars <- icc_pairs[[name]]
+  
+  if (!all(vars %in% names(df_clean))) {
+    warning(name, ": column(s) not found: ",
+            paste(setdiff(vars, names(df_clean)), collapse = ", "), call. = FALSE)
+    return(NULL)
+  }
+  
+  df_pair <- df_clean %>%
+    select(all_of(vars)) %>%
+    drop_na()
+  
+  if (nrow(df_pair) < 3) {
+    return(tibble(Variable = name, n = nrow(df_pair), ICC = NA_real_,
+                  CI_lower = NA_real_, CI_upper = NA_real_,
+                  F = NA_real_, df1 = NA_real_, df2 = NA_real_, p_value = NA_real_))
+  }
+  
+  # ICC(A,1): two-way, absolute agreement, single rater
+  res <- icc(df_pair, model = "twoway", type = "agreement", unit = "single")
+  
+  tibble(
+    Variable = name,
+    n        = res$subjects,
+    ICC      = round(res$value, 2),
+    CI_lower = round(res$lbound, 2),
+    CI_upper = round(res$ubound, 2),
+    F        = round(res$Fvalue, 2),
+    df1      = res$df1,
+    df2      = round(res$df2, 1),
+    p_value  = signif(res$p.value, 3)
+  )
+}) %>% bind_rows()
+
+icc_results
+```
+
+### 5.2 Within-sample internal consistency
+
+```{r internal-consistency}
+# Pull items by name
+get_items <- function(df, prefix, n_items) {
+  item_names <- paste0(prefix, "_", seq_len(n_items))
+  absent <- setdiff(item_names, names(df))
+  if (length(absent) > 0) stop("Items not found: ", paste(absent, collapse = ", "), call. = FALSE)
+  items <- select(df, all_of(item_names))
+  if (!all(sapply(items, is.numeric))) stop(prefix, ": non-numeric items, recode first", call. = FALSE)
+  items
+}
+
+add_note <- function(old, new) paste(na.omit(c(old, new)), collapse = "; ")
+
+# Standardised alpha + one-factor omega total from a FIML correlation matrix
+reliability <- function(df, prefix, n_items, title) {
+  
+  items <- get_items(df, prefix, n_items)
+  
+  items <- items[rowSums(!is.na(items)) / n_items >= 0.8, ]
+  
+  res <- tibble(Scale = title, n_items = n_items,
+                n_obs = nrow(items),
+                alpha_std = NA_real_, omega_total = NA_real_, note = NA_character_)
+  
+  tryCatch({
+    r <- suppressWarnings(corFiml(items))
+    
+    # Smooth if not positive definite
+    if (min(eigen(r, only.values = TRUE)$values) <= 1e-8) {
+      r <- psych::cor.smooth(r)
+      res$note <- add_note(res$note, "FIML matrix smoothed")
+    }
+    
+    # Standardised alpha from the mean inter-item correlation
+    rbar <- mean(r[lower.tri(r)])
+    res$alpha_std <- n_items * rbar / (1 + (n_items - 1) * rbar)
+    
+    # One-factor model: capture warnings instead of suppressing them
+    fa_warnings <- character()
+    f <- withCallingHandlers(
+      psych::fa(r, nfactors = 1, fm = "minres"),
+      warning = function(w) {
+        fa_warnings <<- c(fa_warnings, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      }
+    )
+    
+    lam <- as.numeric(f$loadings)
+    if (sum(lam) < 0) lam <- -lam
+    h2  <- as.numeric(f$communality)
+    
+    res$omega_total <- sum(lam)^2 / (sum(lam)^2 + sum(1 - lam^2))
+    
+    # Flags
+    if (any(lam < 0)) {
+      res$note <- add_note(res$note, "mixed-sign loadings: check reverse-coding")
+    }
+    if (any(grepl("Heywood", fa_warnings, ignore.case = TRUE)) ||
+        any(h2 >= 0.99) || any(abs(lam) >= 0.99)) {
+      res$note <- add_note(res$note, "Heywood case / loading at boundary: omega unreliable")
+    }
+    other_w <- fa_warnings[!grepl("Heywood", fa_warnings, ignore.case = TRUE)]
+    if (length(other_w) > 0) {
+      res$note <- add_note(res$note, paste("fa warning:", paste(unique(other_w), collapse = " | ")))
+    }
+    if (res$omega_total >= 1) {
+      res$note <- add_note(res$note, "omega >= 1: impossible value")
+    }
+  }, error = function(e) {
+    res$note <<- add_note(res$note, paste("failed:", conditionMessage(e)))
+  })
+  
+  res
+}
+
+scales <- tribble(
+  ~prefix,   ~n_items, ~title,
+  "pds_c",    5,       "Caregiver PDS",
+  "pds_y",    5,       "Young Person PDS",
+  "ers_c",    21,      "Caregiver ERS",
+  "ers_y",    21,      "Young Person ERS",
+  "smfq_c",   13,      "Caregiver SMFQ",
+  "smfq_y",   13,      "Young Person SMFQ",
+  "swan_c",   18,      "Caregiver SWAN"
+)
+
+omega_results <- scales %>%
+  pmap(function(prefix, n_items, title) reliability(df_clean, prefix, n_items, title)) %>%
+  bind_rows() %>%
+  mutate(across(c(alpha_std, omega_total), ~ round(., 2)))
+
+print(omega_results, width = Inf)
+
+write_csv(omega_results, here("Descriptives", "internal_consistency.csv"))
+```
+

@@ -1,0 +1,1689 @@
+---
+title: "Puberty emotions sensitivity analyses"
+author: "Emily Friedel"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+### Load libraries
+
+```{r libraries}
+library(tidyverse)
+library(brms)
+library(posterior)
+library(bayestestR)
+library(loo)
+library(bayesplot)
+library(here)
+```
+
+### Import saved imputed dfs and observed df
+
+```{r import-data}
+analytic_dfs <- readRDS(here("Imputed Data", "analytic_dfs.rds"))
+obs_df <- readRDS(here("Clean Data", "df_c_clean.rds"))
+```
+
+### Initial checks
+
+```{r initial-checks}
+length(analytic_dfs)
+sapply(analytic_dfs, nrow) |> unique()
+colnames(analytic_dfs[[1]])
+
+nrow(obs_df)
+colnames(obs_df)
+```
+
+### Create folders
+
+```{r folders}
+dir.create(here("Sensitivity Models"), showWarnings = FALSE)
+```
+
+### Remove unconfirmed ADHD diagnoses from imputed dfs
+
+```{r remove-unconfirmed-adhd}
+stopifnot("diagnosis_c" %in% names(analytic_dfs[[1]]))
+
+excluded_diagnoses <- c("self_identified", "suspected", "other")
+
+# Remove from imputed dfs
+analytic_dfs_excluded <- lapply(analytic_dfs, function(df) {
+  df %>%
+    filter(!as.character(diagnosis_c) %in% excluded_diagnoses)
+})
+
+# Number of participants being excluded
+sapply(analytic_dfs, function(df) sum(as.character(df$diagnosis_c) %in% excluded_diagnoses))
+
+# Number of rows before and after
+sapply(analytic_dfs, nrow)
+sapply(analytic_dfs_excluded, nrow)
+
+# Check that no excluded diagnoses remain
+sapply(analytic_dfs_excluded,
+       function(df) any(as.character(df$diagnosis_c) %in% excluded_diagnoses))
+
+stopifnot(length(unique(sapply(analytic_dfs_excluded, nrow))) == 1)
+```
+
+## 1. Fully adjusted models
+
+### Check categorical cells
+
+```{r check-cat-cells}
+df_check <- analytic_dfs[[1]] %>%
+  mutate(across(c(adhd_status, autism, bc_status, adhd_med_status),
+                ~ factor(as.character(.x), levels = c("N", "Y"))))
+
+df_check %>%
+  group_by(adhd_status) %>%
+  summarise(
+    n         = n(),
+    autism_Y  = sum(autism == "Y", na.rm = TRUE),
+    autism_N  = sum(autism == "N", na.rm = TRUE),
+    autism_NA = sum(is.na(autism)),
+    bc_Y      = sum(bc_status == "Y", na.rm = TRUE),
+    bc_N      = sum(bc_status == "N", na.rm = TRUE),
+    bc_NA     = sum(is.na(bc_status)),
+    med_Y     = sum(adhd_med_status == "Y", na.rm = TRUE),
+    med_N     = sum(adhd_med_status == "N", na.rm = TRUE),
+    med_NA    = sum(is.na(adhd_med_status))
+  )
+
+# Cross-tabs
+df_check %>% count(adhd_status, autism, .drop = FALSE)
+df_check %>% count(adhd_status, bc_status, .drop = FALSE)
+df_check %>% count(adhd_status, adhd_med_status, .drop = FALSE)
+```
+
+### Set up formulas and prior
+
+```{r hypothesis-formulas-prior}
+# Formulas
+formula_h1_fully_adjusted <- bf(ers_total_s ~ pds_total_s * adhd_status 
+                                + age_cont_s + sed_percentile_s 
+                                + bmi_s + smfq_total_s)
+              
+
+formula_h2_fully_adjusted <- bf(ers_total_s ~ pubertal_timing_s * adhd_status
+                                 + sed_percentile_s
+                                 + bmi_s + smfq_total_s)
+
+# Specify priors
+priors <- c(
+  prior(normal(0, 1), class = "b"),
+  prior(normal(0, 1), class = "Intercept"),
+  prior(exponential(1), class = "sigma")
+)
+```
+
+#### Check default prior
+
+```{r default-prior}
+get_prior(
+  formula = formula_h1_fully_adjusted,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+
+get_prior(
+  formula = formula_h2_fully_adjusted,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+```
+
+## Run models
+
+### H1 Fully Adjusted Model
+
+```{r H1-fully-adjusted-model}
+fit_h1_fully_adjusted <- brm_multiple(
+  formula = formula_h1_fully_adjusted,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors,   
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h1_fully_adjusted, here("Sensitivity Models", "fit_h1_fully_adjusted.rds"))
+```
+
+### H1 Fully Adjusted Model output
+
+```{r H1-fully-adjusted-output}
+bayes_R2(fit_h1_fully_adjusted)
+
+# Compute pd and ROPE
+effect_h1_fully_adjusted <- describe_posterior(
+  fit_h1_fully_adjusted,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h1_fully_adjusted <- effect_h1_fully_adjusted %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h1_fully_adjusted %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H1 Fully Adjusted Model diagnostics and PP checks
+
+```{r H1-fully-adjusted-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h1_fully_adjusted) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h1_fully_adjusted)$Parameter == "divergent__" &
+          nuts_params(fit_h1_fully_adjusted)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h1_fully_adjusted, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h1_fully_adjusted)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h1_fully_adjusted, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h1_fully_adjusted, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h1_fully_adjusted, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h1_fully_adjusted, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h1_fully_adjusted, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h1_fully_adjusted, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h1_fully_adjusted, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h1_fully_adjusted <- loo(fit_h1_fully_adjusted)
+pareto_k_table(loo_h1_fully_adjusted)
+plot(loo_h1_fully_adjusted, label_points = TRUE)
+```
+
+### H2 Fully Adjusted Model
+
+```{r H2-fully-adjusted-model}
+fit_h2_fully_adjusted <- brm_multiple(
+  formula = formula_h2_fully_adjusted,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h2_fully_adjusted, here("Sensitivity Models", "fit_h2_fully_adjusted.rds"))
+```
+
+### H2 Fully Adjusted Model output
+
+```{r H2-fully-adjusted-output}
+bayes_R2(fit_h2_fully_adjusted)
+
+# Compute pd and ROPE
+effect_h2_fully_adjusted <- describe_posterior(
+  fit_h2_fully_adjusted,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h2_fully_adjusted <- effect_h2_fully_adjusted %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h2_fully_adjusted %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H2 Fully Adjusted Model diagnostics and PP checks
+
+```{r H2-fully-adjusted-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h2_fully_adjusted) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h2_fully_adjusted)$Parameter == "divergent__" &
+          nuts_params(fit_h2_fully_adjusted)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h2_fully_adjusted, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h2_fully_adjusted)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h2_fully_adjusted, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h2_fully_adjusted, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h2_fully_adjusted, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h2_fully_adjusted, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h2_fully_adjusted, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h2_fully_adjusted, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h2_fully_adjusted, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h2_fully_adjusted <- loo(fit_h2_fully_adjusted)
+pareto_k_table(loo_h2_fully_adjusted)
+plot(loo_h2_fully_adjusted, label_points = TRUE)
+```
+
+## 2. Observed data
+
+### Set up formulas
+
+```{r obs-hypothesis-formulas-prior}
+# Formulas
+formula_h1_obs <- bf(ers_total_s ~ pds_total_s * adhd_status
+                     + age_cont_s + sed_percentile_s)
+
+formula_h2_obs <- bf(ers_total_s ~ pubertal_timing_s * adhd_status
+                     + sed_percentile_s)
+```
+
+### Check default prior
+
+```{r obs-default-prior}
+get_prior(
+  formula = formula_h1_obs,
+  data = obs_df,
+  family = gaussian()
+)
+
+get_prior(
+  formula = formula_h2_obs,
+  data = obs_df,
+  family = gaussian()
+)
+```
+
+## Run models
+
+### H1 Observed Model
+
+```{r H1-obs-model}
+fit_h1_obs <- brm(
+  formula = formula_h1_obs,
+  data = obs_df,
+  family = gaussian(),
+  prior = priors,   
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h1_obs, here("Sensitivity Models", "fit_h1_obs.rds"))
+```
+
+### H1 Observed Model output
+
+```{r H1-obs-output}
+bayes_R2(fit_h1_obs)
+
+# Compute pd and ROPE
+effect_h1_obs <- describe_posterior(
+  fit_h1_obs,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h1_obs <- effect_h1_obs %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h1_obs %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H1 Observed Model diagnostics and PP checks
+
+```{r H1-obs-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h1_obs) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h1_obs)$Parameter == "divergent__" &
+          nuts_params(fit_h1_obs)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h1_obs, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h1_obs)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h1_obs, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h1_obs, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h1_obs, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h1_obs, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h1_obs, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h1_obs, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h1_obs, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h1_obs <- loo(fit_h1_obs)
+pareto_k_table(loo_h1_obs)
+plot(loo_h1_obs, label_points = TRUE)
+```
+
+### H2 Observed Model
+
+```{r H2-obs-model}
+fit_h2_obs <- brm(
+  formula = formula_h2_obs,
+  data = obs_df,
+  family = gaussian(),
+  prior = priors,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+saveRDS(fit_h2_obs, here("Sensitivity Models", "fit_h2_obs.rds"))
+```
+
+### H2 Observed Model output
+
+```{r H2-obs-output}
+bayes_R2(fit_h2_obs)
+
+# Compute pd and ROPE
+effect_h2_obs <- describe_posterior(
+  fit_h2_obs,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h2_obs <- effect_h2_obs %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h2_obs %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H2 Observed Model diagnostics and PP checks
+
+```{r H2-obs-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h2_obs) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h2_obs)$Parameter == "divergent__" &
+          nuts_params(fit_h2_obs)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h2_obs, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h2_obs)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h2_obs, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h2_obs, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h2_obs, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h2_obs, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h2_obs, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h2_obs, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h2_obs, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h2_obs <- loo(fit_h2_obs)
+pareto_k_table(loo_h2_obs)
+plot(loo_h2_obs, label_points = TRUE)
+```
+
+## 3. Prior 1 preregistered
+
+## Set up formulas and prior
+
+```{r prior1-hypothesis-formulas-prior}
+# Formulas
+formula_h1_prior_1 <- bf(ers_total_s ~ pds_total_s * adhd_status 
+                         + age_cont_s + sed_percentile_s)
+
+formula_h2_prior_1 <- bf(ers_total_s ~ pubertal_timing_s * adhd_status 
+                         + sed_percentile_s)
+
+# Specify priors
+priors1 <- c(
+  prior(normal(0, 0.75), class = "b"),
+  prior(normal(0, 1), class = "Intercept"),
+  prior(exponential(1), class = "sigma")
+)
+```
+
+### Check default prior
+
+```{r prior1-default-prior}
+
+get_prior(
+  formula = formula_h1_prior_1,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+
+get_prior(
+  formula = formula_h2_prior_1,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+```
+
+## Run models
+
+### H1 Prior 1 Model
+
+```{r H1-prior1-model}
+fit_h1_prior_1 <- brm_multiple(
+  formula = formula_h1_prior_1,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors1,   
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h1_prior_1, here("Sensitivity Models", "fit_h1_prior_1.rds"))
+```
+
+### H1 Prior 1 Model output
+
+```{r H1-prior1-output}
+bayes_R2(fit_h1_prior_1)
+
+# Compute pd and ROPE
+effect_h1_prior_1 <- describe_posterior(
+  fit_h1_prior_1,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h1_prior_1 <- effect_h1_prior_1 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h1_prior_1 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H1 Prior 1 Model diagnostics and PP checks
+
+```{r H1-prior1-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h1_prior_1) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h1_prior_1)$Parameter == "divergent__" &
+          nuts_params(fit_h1_prior_1)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h1_prior_1, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h1_prior_1)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h1_prior_1, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h1_prior_1, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h1_prior_1, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h1_prior_1, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h1_prior_1, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h1_prior_1, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h1_prior_1, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h1_prior_1<- loo(fit_h1_prior_1)
+pareto_k_table(loo_h1_prior_1)
+plot(loo_h1_prior_1, label_points = TRUE)
+```
+
+### H2 Prior 1 Model
+
+```{r H2-prior1-model}
+fit_h2_prior_1 <- brm_multiple(
+  formula = formula_h2_prior_1,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors1,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h2_prior_1, here("Sensitivity Models", "fit_h2_prior_1.rds"))
+```
+
+### H2 Prior 1 Model output
+
+```{r H2-prior1-output}
+bayes_R2(fit_h2_prior_1,)
+
+# Compute pd and ROPE
+effect_h2_prior_1 <- describe_posterior(
+  fit_h2_prior_1,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h2_prior_1 <- effect_h2_prior_1 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h2_prior_1 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H2 Prior 1 Model diagnostics and PP checks
+
+```{r H2-prior1-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h2_prior_1) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h2_prior_1)$Parameter == "divergent__" &
+          nuts_params(fit_h2_prior_1)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h2_prior_1, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h2_prior_1)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h2_prior_1, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h2_prior_1, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h2_prior_1, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h2_prior_1, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h2_prior_1, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h2_prior_1, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h2_prior_1, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h2_prior_1 <- loo(fit_h2_prior_1)
+pareto_k_table(loo_h2_prior_1)
+plot(loo_h2_prior_1, label_points = TRUE)
+```
+
+## 4. Prior 2 preregistered
+
+### Set up hypothesis formulas and prior
+
+```{r prior2-hypothesis-formulas-prior}
+# Formulas
+formula_h1_prior_2 <- bf(ers_total_s ~ pds_total_s * adhd_status 
+                         + age_cont_s + sed_percentile_s)
+
+formula_h2_prior_2 <- bf(ers_total_s ~ pubertal_timing_s * adhd_status 
+                         + sed_percentile_s)
+
+# Specify prior
+priors2 <- c(
+  prior(normal(0, 2.5), class = "b"),
+  prior(normal(0, 1), class = "Intercept"),
+  prior(exponential(1), class = "sigma")
+)
+```
+
+### Check default prior
+
+```{r prior2-default-prior}
+get_prior(
+  formula = formula_h1_prior_2,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+
+get_prior(
+  formula = formula_h2_prior_2,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+```
+
+## Run models
+
+### H1 Prior 2 Model
+
+```{r H1-prior2-model}
+fit_h1_prior_2 <- brm_multiple(
+  formula = formula_h1_prior_2,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors2,   
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h1_prior_2, here("Sensitivity Models", "fit_h1_prior_2.rds"))
+```
+
+### H1 Prior 2 Model output
+
+```{r H1-prior2-output}
+bayes_R2(fit_h1_prior_2)
+
+# Compute pd and ROPE
+effect_h1_prior_2 <- describe_posterior(
+  fit_h1_prior_2,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h1_prior_2 <- effect_h1_prior_2 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h1_prior_2 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H1 Prior 2 Model diagnostics and PP checks
+
+```{r H1-prior2-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h1_prior_2) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h1_prior_2)$Parameter == "divergent__" &
+          nuts_params(fit_h1_prior_2)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h1_prior_2, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h1_prior_2)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h1_prior_2, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h1_prior_2, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h1_prior_2, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h1_prior_2, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h1_prior_2, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h1_prior_2, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h1_prior_2, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h1_prior_2 <- loo(fit_h1_prior_2)
+pareto_k_table(loo_h1_prior_2)
+plot(loo_h1_prior_2, label_points = TRUE)
+```
+
+### H2 Prior 2 Model
+
+```{r H2-prior2-model}
+fit_h2_prior_2 <- brm_multiple(
+  formula = formula_h2_prior_2,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors2,   
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h2_prior_2, here("Sensitivity Models", "fit_h2_prior_2.rds"))
+```
+
+### H2 Prior 2 Model output
+
+```{r H2-prior2-output}
+bayes_R2(fit_h2_prior_2)
+
+# Compute pd and ROPE
+effect_h2_prior_2 <- describe_posterior(
+  fit_h2_prior_2,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h2_prior_2 <- effect_h2_prior_2 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h2_prior_2 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H2 Prior 2 Model diagnostics and PP checks
+
+```{r H2-prior2-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h2_prior_2) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h2_prior_2)$Parameter == "divergent__" &
+          nuts_params(fit_h2_prior_2)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h2_prior_2, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h2_prior_2)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h2_prior_2, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h2_prior_2, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h2_prior_2, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h2_prior_2, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h2_prior_2, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h2_prior_2, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h2_prior_2, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h2_prior_2 <- loo(fit_h2_prior_2)
+pareto_k_table(loo_h2_prior_2)
+plot(loo_h2_prior_2, label_points = TRUE)
+```
+
+## 5. Prior set 3
+
+### Set up hypothesis formulas and prior
+
+```{r prior3-hypothesis-formulas-prior}
+# Formulas
+formula_h1_prior_3 <- bf(ers_total_s ~ pds_total_s * adhd_status 
+                         + age_cont_s + sed_percentile_s)
+
+formula_h2_prior_3 <- bf(ers_total_s ~ pubertal_timing_s * adhd_status 
+                         + sed_percentile_s)
+
+# Specify priors
+priors3 <- c(
+  prior(normal(0, 0.5), class = "b"),         
+  prior(normal(0, 0.5), class = "Intercept"),  
+  prior(exponential(2), class = "sigma")        
+)
+```
+
+### Check default prior
+
+```{r prior3-default-prior}
+get_prior(
+  formula = formula_h1_prior_3,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+
+get_prior(
+  formula = formula_h2_prior_3,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+```
+
+## Run models
+
+### H1 Prior 3 Model
+
+```{r H1-prior3-model}
+fit_h1_prior_3 <- brm_multiple(
+  formula = formula_h1_prior_3,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors3,   
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h1_prior_3, here("Sensitivity Models", "fit_h1_prior_3.rds"))
+```
+
+### H1 Prior 3 Model output
+
+```{r H1-prior3-output}
+bayes_R2(fit_h1_prior_3)
+
+# Compute pd and ROPE
+effect_h1_prior_3 <- describe_posterior(
+  fit_h1_prior_3,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  centrality = c("mean", "median"),
+  rope_ci = 1,
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h1_prior_3 <- effect_h1_prior_3 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h1_prior_3 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H1 Prior 3 Model diagnostics and PP checks
+
+```{r H1-prior3-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h1_prior_3) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h1_prior_3)$Parameter == "divergent__" &
+          nuts_params(fit_h1_prior_3)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h1_prior_3, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h1_prior_3)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h1_prior_3, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h1_prior_3, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h1_prior_3, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h1_prior_3, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h1_prior_3, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h1_prior_3, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h1_prior_3, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h1_prior_3 <- loo(fit_h1_prior_3)
+pareto_k_table(loo_h1_prior_3)
+plot(loo_h1_prior_3, label_points = TRUE)
+```
+
+### H2 Prior 3 Model
+
+```{r H2-prior3-model}
+fit_h2_prior_3 <- brm_multiple(
+  formula = formula_h2_prior_3,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors3,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+saveRDS(fit_h2_prior_3, here("Sensitivity Models", "fit_h2_prior_3.rds"))
+```
+
+### H2 Prior 3 Model output
+
+```{r H2-prior3-output}
+bayes_R2(fit_h2_prior_3)
+
+# Compute pd and ROPE
+effect_h2_prior_3 <- describe_posterior(
+  fit_h2_prior_3,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h2_prior_3 <- effect_h2_prior_3 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h2_prior_3 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H2 Prior 3 Model diagnostics and PP checks
+
+```{r H2-prior3-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h2_prior_3) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h2_prior_3)$Parameter == "divergent__" &
+          nuts_params(fit_h2_prior_3)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h2_prior_3, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h2_prior_3)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h2_prior_3, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h2_prior_3, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h2_prior_3, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h2_prior_3, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h2_prior_3, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h2_prior_3, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h2_prior_3, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h2_prior_3 <- loo(fit_h2_prior_3)
+pareto_k_table(loo_h2_prior_3)
+plot(loo_h2_prior_3, label_points = TRUE)
+```
+
+## 6. Prior set 4
+
+## Set up hypothesis formulas and prior
+
+```{r prior4-hypothesis-formulas-prior}
+# Formulas
+formula_h1_prior_4 <- bf(ers_total_s ~ pds_total_s * adhd_status 
+                         + age_cont_s + sed_percentile_s)
+
+formula_h2_prior_4 <- bf(ers_total_s ~ pubertal_timing_s * adhd_status 
+                         + sed_percentile_s)
+
+# Specify prior
+priors4 <- c(
+  prior(normal(0, 3), class = "b"),  
+  prior(normal(0, 3), class = "Intercept"),
+  prior(exponential(0.5), class = "sigma")
+)
+```
+
+### Check default prior
+
+```{r prior4-default-prior}
+get_prior(
+  formula = formula_h1_prior_4,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+
+get_prior(
+  formula = formula_h2_prior_4,
+  data = analytic_dfs[[1]],
+  family = gaussian()
+)
+```
+
+## Run models
+
+### H1 Prior 4 Model
+
+```{r H1-prior4-model}
+fit_h1_prior_4 <- brm_multiple(
+  formula = formula_h1_prior_4,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors4,   
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h1_prior_4, here("Sensitivity Models", "fit_h1_prior_4.rds"))
+```
+
+### H1 Prior 4 Model output
+
+```{r H1-prior4-output}
+bayes_R2(fit_h1_prior_4)
+
+# Compute pd and ROPE
+effect_h1_prior_4 <- describe_posterior(
+  fit_h1_prior_4,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h1_prior_4 <- effect_h1_prior_4 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h1_prior_4 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H1 Prior 4 Model diagnostics and PP checks
+
+```{r H1-prior4-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h1_prior_4) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h1_prior_4)$Parameter == "divergent__" &
+          nuts_params(fit_h1_prior_4)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h1_prior_4, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h1_prior_4)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h1_prior_4, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h1_prior_4, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h1_prior_4, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h1_prior_4, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h1_prior_4, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h1_prior_4, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h1_prior_4, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h1_prior_4 <- loo(fit_h1_prior_4)
+pareto_k_table(loo_h1_prior_4)
+plot(loo_h1_prior_4, label_points = TRUE)
+```
+
+### H2 Prior 4 Model
+
+```{r H2-prior4-model}
+fit_h2_prior_4 <- brm_multiple(
+  formula = formula_h2_prior_4,
+  data = analytic_dfs,
+  family = gaussian(),
+  prior = priors4,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,   
+  seed = 12345
+)
+
+saveRDS(fit_h2_prior_4, here("Sensitivity Models", "fit_h2_prior_4.rds"))
+```
+
+### H2 Prior 4 Model output
+
+```{r H2-prior4-output}
+bayes_R2(fit_h2_prior_4)
+
+# Compute pd and ROPE
+effect_h2_prior_4 <- describe_posterior(
+  fit_h2_prior_4,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h2_prior_4 <- effect_h2_prior_4 %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h2_prior_4 %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H2 Prior 4 Model diagnostics and PP checks
+
+```{r H2-prior4-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h2_prior_4) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h2_prior_4)$Parameter == "divergent__" &
+          nuts_params(fit_h2_prior_4)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h2_prior_4, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h2_prior_4)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h2_prior_4, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h2_prior_4, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h2_prior_4, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h2_prior_4, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h2_prior_4, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h2_prior_4, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h2_prior_4, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h2_prior_4 <- loo(fit_h2_prior_4)
+pareto_k_table(loo_h2_prior_4)
+plot(loo_h2_prior_4, label_points = TRUE)
+```
+
+## 7. H2 Model excluding participants without a confirmed ADHD diagnosis
+
+## Set up formula
+
+```{r H2-exclude-unconfirmed-prior}
+# Formulas
+formula_h2_excluded <- bf(ers_total_s ~ pubertal_timing_s * adhd_status 
+                         + sed_percentile_s)
+```
+
+### H2 Model excluding unconfirmed ADHD
+
+```{r H2-exclude-unconfirmed}
+fit_h2_excluded <- brm_multiple(
+  formula = formula_h2_excluded,
+  data = analytic_dfs_excluded,
+  family = gaussian(),
+  prior = priors,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,
+  save_pars = save_pars(all = TRUE),
+  seed = 12345
+)
+
+saveRDS(fit_h2_excluded, here("Sensitivity Models", "fit_h2_excluded.rds"))
+```
+
+### H2 Model excluding unconfirmed ADHD output
+
+```{r H2-output}
+bayes_R2(fit_h2_excluded)
+
+effect_h2_excluded <- describe_posterior(
+  fit_h2_excluded,
+  effects = "all",
+  test = c("pd", "rope"),
+  rope_range = c(-0.1, 0.1),
+  rope_ci = 1,
+  centrality = c("mean", "median"),
+  ci = 0.95,
+  ci_method = "hdi"
+)
+
+# Flag meaningful effects
+effect_h2_excluded <- effect_h2_excluded %>%
+  mutate(meaningful = pd > 0.95 & ROPE_Percentage < 0.05)
+
+# Results summary
+effect_h2_excluded %>%
+  select(Parameter, Mean, Median, CI_low, CI_high, pd, ROPE_Percentage, meaningful)
+```
+
+### H2 Model excluding unconfirmed ADHD diagnostics and PP checks
+
+```{r H2-diagnostics}
+cat("=== Rhat and ESS ===\n")
+cat("Rhat values close to 1 indicate convergence. ESS should ideally be > 400.\n\n")
+as_draws_df(fit_h2_excluded) %>% summarise_draws(default_convergence_measures())
+
+cat("\n=== Divergent Transitions ===\n")
+cat("Ideally 0. Large numbers indicate sampler problems.\n\n")
+cat("Number of divergent transitions:", 
+    sum(nuts_params(fit_h2_excluded)$Parameter == "divergent__" &
+          nuts_params(fit_h2_excluded)$Value == 1),
+    "\n")
+
+# Trace plots
+cat("\n=== Trace Plots ===\n")
+mcmc_trace(fit_h2_excluded, regex_pars = "^b_") +
+  theme(legend.position = "none")
+
+# Prior Summary
+cat("\n=== Prior Summary ===\n")
+cat("Priors specified for the model.\n\n")
+prior_summary(fit_h2_excluded)
+
+# Posterior Predictive Checks
+cat("\n=== Posterior Predictive Checks ===\n")
+cat("Density plots for each parameter.\n\n")
+plot(fit_h2_excluded, ask = FALSE)
+
+cat("\n=== PPC: Density Overlay ===\n")
+cat("y_rep lines should closely follow the observed y distribution.\n\n")
+pp_check(fit_h2_excluded, ndraws = 100)
+
+cat("\n=== PPC: Error Histogram ===\n")
+cat("Errors should be approximately normally distributed around 0.\n\n")
+pp_check(fit_h2_excluded, type = "error_hist")
+
+cat("\n=== PPC: Mean ===\n")
+cat("Observed mean (dark line) should fall within the distribution of replicated means.\n\n")
+pp_check(fit_h2_excluded, type = "stat", stat = "mean")
+
+cat("\n=== PPC: Median ===\n")
+cat("Observed median (dark line) should fall within the distribution of replicated medians.\n\n")
+pp_check(fit_h2_excluded, type = "stat", stat = "median")
+
+cat("\n=== PPC: SD ===\n")
+cat("Observed SD (dark line) should fall within the distribution of replicated SDs.\n\n")
+pp_check(fit_h2_excluded, type = "stat", stat = "sd")
+
+cat("\n=== PPC: Scatter Average ===\n")
+cat("Points should cluster around the diagonal. Systematic patterns indicate misfit.\n\n")
+pp_check(fit_h2_excluded, type = "scatter_avg")
+
+# Pareto-k
+cat("\n=== Pareto-k ===\n")
+loo_h2_excluded <- loo(fit_h2_excluded)
+pareto_k_table(loo_h2_excluded)
+plot(loo_h2_excluded, label_points = TRUE)
+```

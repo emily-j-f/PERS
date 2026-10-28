@@ -1,0 +1,255 @@
+---
+title: "Puberty & emotional reactivity study post-imputation processing"
+author: "Emily Friedel"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+### Load libraries
+
+```{r libraries}
+library(tidyverse)
+library(brms)
+library(bayesplot)
+library(knitr)
+library(here)
+```
+
+### Import imputed df
+
+```{r import-data}
+analytic_dfs <- readRDS(here("Imputed Data", "analytic_dfs.rds"))
+```
+
+### Initial checks
+
+```{r imp-dfs-list}
+head(analytic_dfs[[1]])
+length(unique(analytic_dfs[[1]]$LinkCode))
+```
+
+## 1. Preparation
+
+### 1.1 Set up formulas and helper function
+
+```{r hypothesis-formulas}
+formula_h1 <- bf(ers_total_s ~ pds_total_s * adhd_status 
+                 + age_cont_s + sed_percentile_s)
+
+formula_h2 <- bf(ers_total_s ~ pubertal_timing_s * adhd_status 
+                 + sed_percentile_s)
+
+yrep_summary_tbl <- tibble()
+
+fmt_prior <- function(ps, cls) {
+  ps <- as.data.frame(ps)
+  r <- ps[ps$class == cls & ps$coef == "" & ps$group == "", ][1, ]
+  out <- gsub(" ", "", r$prior)
+  out <- sub("^normal", "N", out)
+  out <- sub("^student_t", "t", out)
+  out <- sub("^exponential", "Exponential", out)
+  if (r$source == "default") paste0(out, "*") else out
+}
+
+# Helper function
+run_prior_pred_check <- function(formula, data, prior, label,
+                                  model_label, prior_set_label,
+                                  chains = 4, iter = 2000, seed = 1234) {
+
+  model <- brm(
+    formula = formula,
+    data = data,
+    family = gaussian(),
+    prior = prior,
+    chains = chains,
+    iter = iter,
+    sample_prior = "only",
+    seed = seed
+  )
+
+  set.seed(seed)
+  yrep     <- posterior_predict(model)
+  yrep_vec <- as.vector(yrep)
+  qs       <- quantile(yrep_vec, c(.01, .05, .5, .95, .99))
+
+  cat("\n===", label, "===\n")
+
+  cat("\n-- yrep summary --\n")
+  print(range(yrep_vec))
+  cat("mean:  ", mean(yrep_vec), "\n")
+  cat("median:", median(yrep_vec), "\n")
+  cat("sd:    ", sd(yrep_vec), "\n")
+
+  cat("\n-- yrep quantiles --\n")
+  print(qs)
+
+  cat("\n-- ppd_stat distributions --\n")
+  print(ppd_stat(yrep, stat = "mean"))
+  print(ppd_stat(yrep, stat = "median"))
+  print(ppd_stat(yrep, stat = "sd"))
+
+  cat("\n-- prior summary --\n")
+  print(prior_summary(model))
+
+  cat("\n-- model summary --\n")
+  print(summary(model))
+
+  ps <- prior_summary(model)
+
+  row <- tibble(
+    Model             = model_label,
+    `Prior Set`       = prior_set_label,
+    `b Prior`         = fmt_prior(ps, "b"),
+    `Intercept Prior` = fmt_prior(ps, "Intercept"),
+    `Sigma Prior`     = fmt_prior(ps, "sigma"),
+    `yrep M`          = mean(yrep_vec),
+    `yrep Mdn`        = median(yrep_vec),
+    `yrep SD`         = sd(yrep_vec),
+    q01               = qs[["1%"]],
+    q05               = qs[["5%"]],
+    q95               = qs[["95%"]],
+    q99               = qs[["99%"]]
+  )
+  yrep_summary_tbl <<- bind_rows(yrep_summary_tbl, row)
+
+  invisible(model)
+}
+```
+
+### 1.2 Set up priors
+
+```{r priors}
+prior_prereg <- prior(normal(0, 1), class = b)
+
+prior_set_1 <- prior(normal(0, 0.5), class = b)
+
+prior_set_2 <- c(prior(normal(0, 1), class = b),
+                 prior(exponential(1), class = sigma))
+
+prior_set_3 <- c(prior(normal(0, 0.5), class = b),
+                 prior(exponential(1), class = sigma))
+
+prior_set_4 <- c(prior(normal(0, 1), class = b),
+                 prior(normal(0, 1), class = Intercept),
+                 prior(exponential(1), class = sigma))
+```
+
+## 2. Prior predictive checks
+
+### 2.1 Preregistered prior predictive checks
+
+```{r prereg-prior-pred-check}
+prior_prereg_model_h1 <- run_prior_pred_check(
+  formula = formula_h1, data = analytic_dfs[[1]], prior = prior_prereg,
+  label = "yrep model 1 (preregistered prior)", seed = 1234,
+  model_label = "H1", prior_set_label = "Preregistered"
+)
+
+prior_prereg_model_h2 <- run_prior_pred_check(
+  formula = formula_h2, data = analytic_dfs[[1]], prior = prior_prereg,
+  label = "yrep model 2 (preregistered prior)", seed = 1234,
+  model_label = "H2", prior_set_label = "Preregistered"
+)
+
+prior_summary(prior_prereg_model_h1)
+prior_summary(prior_prereg_model_h2)
+```
+
+### 2.2 Prior set 1 prior predictive checks
+
+```{r prior1-pred-check}
+prior_set_1_model_h1 <- run_prior_pred_check(
+  formula = formula_h1, data = analytic_dfs[[1]], prior = prior_set_1,
+  label = "yrep model 1 (prior set 1)", seed = 1234,
+  model_label = "H1", prior_set_label = "Set 1"
+)
+
+prior_set_1_model_h2 <- run_prior_pred_check(
+  formula = formula_h2, data = analytic_dfs[[1]], prior = prior_set_1,
+  label = "yrep model 2 (prior set 1)", seed = 1234,
+  model_label = "H2", prior_set_label = "Set 1"
+)
+
+prior_summary(prior_set_1_model_h1)
+prior_summary(prior_set_1_model_h2)
+```
+
+### 2.3 Prior set 2 prior predictive checks
+
+```{r prior2-pred-check}
+prior_set_2_model_h1 <- run_prior_pred_check(
+  formula = formula_h1, data = analytic_dfs[[1]], prior = prior_set_2,
+  label = "yrep model 1 (prior set 2)", seed = 1234,
+  model_label = "H1", prior_set_label = "Set 2"
+)
+
+prior_set_2_model_h2 <- run_prior_pred_check(
+  formula = formula_h2, data = analytic_dfs[[1]], prior = prior_set_2,
+  label = "yrep model 2 (prior set 2)", seed = 1234,
+  model_label = "H2", prior_set_label = "Set 2"
+)
+
+prior_summary(prior_set_2_model_h1)
+prior_summary(prior_set_2_model_h2)
+```
+
+### 2.4 Prior set 3 prior predictive checks
+
+```{r prior3-pred-check}
+prior_set_3_model_h1 <- run_prior_pred_check(
+  formula = formula_h1, data = analytic_dfs[[1]], prior = prior_set_3,
+  label = "yrep model 1 (prior set 3)", seed = 1234,
+  model_label = "H1", prior_set_label = "Set 3"
+)
+
+prior_set_3_model_h2 <- run_prior_pred_check(
+  formula = formula_h2, data = analytic_dfs[[1]], prior = prior_set_3,
+  label = "yrep model 2 (prior set 3)", seed = 1234,
+  model_label = "H2", prior_set_label = "Set 3"
+)
+
+prior_summary(prior_set_3_model_h1)
+prior_summary(prior_set_3_model_h2)
+```
+
+### 2.5 Prior set 4 prior predictive checks
+
+```{r prior4-pred-check}
+prior_set_4_model_h1 <- run_prior_pred_check(
+  formula = formula_h1, data = analytic_dfs[[1]], prior = prior_set_4,
+  label = "yrep model 1 (prior set 4)", seed = 1234,
+  model_label = "H1", prior_set_label = "Set 4"
+)
+
+prior_set_4_model_h2 <- run_prior_pred_check(
+  formula = formula_h2, data = analytic_dfs[[1]], prior = prior_set_4,
+  label = "yrep model 2 (prior set 4)", seed = 1234,
+  model_label = "H2", prior_set_label = "Set 4"
+)
+
+prior_summary(prior_set_4_model_h1)
+prior_summary(prior_set_4_model_h2)
+```
+
+### 2.6 Summary table
+
+```{r prior-pred-summary-table}
+yrep_summary_display <- yrep_summary_tbl %>%
+  mutate(
+    `yrep 5th–95th percentile` = sprintf("%.2f to %.2f", q05, q95),
+    `yrep 1st–99th percentile` = sprintf("%.2f to %.2f", q01, q99),
+    across(c(`yrep M`, `yrep Mdn`, `yrep SD`), ~ round(.x, 2))
+  ) %>%
+  select(Model, `Prior Set`, `b Prior`, `Intercept Prior`, `Sigma Prior`,
+         `yrep M`, `yrep Mdn`, `yrep SD`,
+         `yrep 5th–95th percentile`, `yrep 1st–99th percentile`)
+
+kable(yrep_summary_display, digits = 2, align = "c")
+```

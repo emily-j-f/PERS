@@ -1,0 +1,676 @@
+---
+title: "Puberty & emotional reactivity study post-imputation processing"
+author: "Emily Friedel"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+### Load libraries
+
+```{r libraries}
+library(tidyverse)
+library(corrplot)
+library(car)
+library(here)
+```
+
+### Import MI mids object
+
+```{r import-data}
+completed_dfs <- readRDS(here("Imputed Data", "completed_dfs.rds"))
+completed_dfs_y <- readRDS(here("Imputed Data","completed_dfs_y.rds"))
+```
+
+### Initial checks
+
+```{r imp-dfs-list}
+head(completed_dfs[[1]])
+head(completed_dfs_y[[1]])
+
+
+stopifnot(!anyDuplicated(completed_dfs[[1]]$LinkCode),
+          !anyDuplicated(completed_dfs_y[[1]]$LinkCode))
+```
+
+## 1. Post-imputation data processing
+
+### 1.1 Variable types
+
+```{r recoding}
+# Scale specs
+
+scale_spec <- list(
+  pds_c  = list(items = paste0("pds_c_", 1:5),   min = 1,  max = 4),
+  pds_y  = list(items = paste0("pds_y_", 1:5),   min = 1,  max = 4),
+  ers_c  = list(items = paste0("ers_c_", 1:21),  min = 0,  max = 4),
+  ers_y  = list(items = paste0("ers_y_", 1:21),  min = 0,  max = 4),
+  smfq_c = list(items = paste0("smfq_c_", 1:13), min = 0,  max = 2),
+  smfq_y = list(items = paste0("smfq_y_", 1:13), min = 0,  max = 2),
+  swan_c = list(items = paste0("swan_c_", 1:18), min = -3, max = 3)
+)
+
+# Safe factor recoding helper
+recode_factor_safe <- function(x, values, labels, var_name) {
+  x_chr <- as.character(x)
+  values_chr <- as.character(values)
+  unexpected <- setdiff(unique(x_chr[!is.na(x_chr)]), values_chr)
+  if (length(unexpected) > 0) {
+    warning(
+      sprintf(
+        "%s: unexpected value(s) %s not in mapping (%s) — these will become NA.",
+        var_name,
+        paste(unexpected, collapse = ", "),
+        paste(values_chr, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+  factor(x_chr, levels = values_chr, labels = labels)
+}
+
+# Safe numeric conversion helpers
+
+to_numeric_safe <- function(x, var_name) {
+  out <- suppressWarnings(as.numeric(as.character(x)))
+  new_na <- sum(is.na(out) & !is.na(x))
+  if (new_na > 0) {
+    stop(sprintf("%s: %d value(s) could not be converted to numeric.",
+                 var_name, new_na), call. = FALSE)
+  }
+  out
+}
+
+convert_items <- function(dfs, items) {
+  lapply(dfs, function(df) {
+    missing_cols <- setdiff(items, names(df))
+    if (length(missing_cols) > 0) {
+      stop("Missing item columns: ", paste(missing_cols, collapse = ", "), call. = FALSE)
+    }
+    for (v in items) df[[v]] <- to_numeric_safe(df[[v]], v)
+    df
+  })
+}
+
+#------------
+# Main data
+#------------
+factor_vars <- c("adhd_status", "bc_status", "adhd_med_status", "menarche_status")
+
+completed_dfs <- lapply(completed_dfs, function(df) {
+  for (v in factor_vars) {
+    df[[v]] <- recode_factor_safe(df[[v]], values = c("N", "Y"), labels = c("N", "Y"), var_name = v)
+  }
+  return(df)
+})
+
+# Scale items -> numeric
+items_c <- unlist(lapply(scale_spec[c("pds_c", "ers_c", "smfq_c", "swan_c")], `[[`, "items"))
+completed_dfs <- convert_items(completed_dfs, items_c)
+
+# Quick checks on the first dataset
+vars_to_check <- c("adhd_status", "bc_status", "adhd_med_status", "menarche_status")
+
+sapply(completed_dfs[[1]][vars_to_check], class)
+lapply(completed_dfs[[1]][vars_to_check], levels)
+table(sapply(completed_dfs[[1]][items_c], class))
+
+#-------------------
+# Young person data
+#-------------------
+factor_vars_y <- c("adhd_y")
+
+completed_dfs_y <- lapply(completed_dfs_y, function(df) {
+  for (v in factor_vars_y) {
+    df[[v]] <- recode_factor_safe(df[[v]], values = c("N", "Y"), labels = c("N", "Y"), var_name = v)
+  }
+  return(df)
+})
+
+# Scale items -> numeric
+items_y <- unlist(lapply(scale_spec[c("pds_y", "ers_y", "smfq_y")], `[[`, "items"))
+completed_dfs_y <- convert_items(completed_dfs_y, items_y)
+
+# Quick checks on the first dataset
+sapply(completed_dfs_y[[1]][factor_vars_y], class)
+lapply(completed_dfs_y[[1]][factor_vars_y], levels)
+table(sapply(completed_dfs_y[[1]][items_y], class))
+```
+
+### 1.2 Derived variables
+
+```{r total-scores-bmi}
+# Safeguard for incorrect variable types
+stopifnot(
+  all(sapply(completed_dfs[[1]][c("age_cont", "sed_percentile", "menarche_timing")], is.numeric)),
+  all(sapply(completed_dfs_y[[1]][c("age_cont_y", "sed_percentile")], is.numeric))
+)
+
+# Specs and total names
+spec_c   <- scale_spec[c("pds_c", "ers_c", "smfq_c", "swan_c")]
+spec_y   <- scale_spec[c("pds_y", "ers_y", "smfq_y")]
+totals_c <- c(pds_c = "pds_total",   ers_c = "ers_total",
+              smfq_c = "smfq_total", swan_c = "swan_total")
+totals_y <- c(pds_y = "pds_total_y", ers_y = "ers_total_y",
+              smfq_y = "smfq_total_y")
+
+# Helpers
+
+# Simple sum of items (data are imputed, so any NA is an error)
+sum_score <- function(df, items) {
+  m <- as.matrix(df[items])
+  if (anyNA(m)) {
+    stop("Missing values found in items: ",
+         paste(items[colSums(is.na(m)) > 0], collapse = ", "))
+  }
+  rowSums(m)
+}
+
+# Item range check per imputation, summarised across imputations
+check_item_ranges <- function(dfs, spec, label) {
+  res <- purrr::imap_dfr(dfs, function(df, i) {
+    purrr::imap_dfr(spec, function(s, nm) {
+      vals <- unlist(df[s$items])
+      tibble(
+        imp = i, scale = nm,
+        expected_min = s$min, expected_max = s$max,
+        observed_min = min(vals, na.rm = TRUE),
+        observed_max = max(vals, na.rm = TRUE),
+        n_out_of_range = sum(vals < s$min | vals > s$max, na.rm = TRUE),
+        n_missing_items = sum(is.na(vals))
+      )
+    })
+  })
+  summ <- res %>%
+    group_by(scale, expected_min, expected_max) %>%
+    summarise(observed_min = min(observed_min),
+              observed_max = max(observed_max),
+              n_out_of_range = sum(n_out_of_range),
+              n_missing_items = sum(n_missing_items),
+              .groups = "drop")
+  cat("\n---", label, "item range check (all imputations) ---\n")
+  print(summ)
+  if (any(summ$n_out_of_range > 0)) stop(label, ": scale items outside expected range.")
+  if (any(summ$n_missing_items > 0)) stop(label, ": missing item values remain after imputation.")
+  invisible(summ)
+}
+
+add_totals <- function(dfs, spec, totals) {
+  lapply(dfs, function(df) {
+    for (nm in names(totals)) {
+      df[[totals[[nm]]]] <- sum_score(df, spec[[nm]]$items)
+    }
+    df
+  })
+}
+
+check_totals <- function(dfs, spec, totals, label) {
+  res <- purrr::imap_dfr(dfs, function(df, i) {
+    purrr::imap_dfr(totals, function(tot, nm) {
+      tibble(
+        imp = i, total = tot,
+        lo = spec[[nm]]$min * length(spec[[nm]]$items),
+        hi = spec[[nm]]$max * length(spec[[nm]]$items),
+        observed_min = min(df[[tot]], na.rm = TRUE),
+        observed_max = max(df[[tot]], na.rm = TRUE),
+        n_missing = sum(is.na(df[[tot]]))
+      )
+    })
+  })
+  summ <- res %>%
+    group_by(total, lo, hi) %>%
+    summarise(observed_min = min(observed_min),
+              observed_max = max(observed_max),
+              n_missing = sum(n_missing),
+              .groups = "drop")
+  cat("\n---", label, "total check (all imputations) ---\n")
+  print(summ)
+  stopifnot(all(summ$observed_min >= summ$lo),
+            all(summ$observed_max <= summ$hi),
+            all(summ$n_missing == 0))
+  invisible(summ)
+}
+
+# Pubertal timing = residual of PDS total on age, within each imputation
+add_timing <- function(dfs, total, age, out) {
+  lapply(dfs, function(df) {
+    fit <- lm(reformulate(age, response = total), data = df, na.action = na.exclude)
+    df[[out]] <- resid(fit)
+    df
+  })
+}
+
+# Missing/infinite check on derived variables across all imputations
+check_derived <- function(dfs, vars, label) {
+  res <- purrr::imap_dfr(dfs, function(df, i) {
+    tibble(imp = i,
+           n_missing  = sum(is.na(df[vars])),
+           n_infinite = sum(sapply(df[vars], function(x) sum(is.infinite(x)))))
+  }) %>% summarise(across(c(n_missing, n_infinite), sum))
+  cat("\n---", label, "derived variable check (all imputations) ---\n")
+  print(res)
+  stopifnot(res$n_missing == 0, res$n_infinite == 0)
+  invisible(res)
+}
+
+#-----------------------
+# Main (caregiver) data
+#-----------------------
+check_item_ranges(completed_dfs, spec_c, "Main")
+completed_dfs <- add_totals(completed_dfs, spec_c, totals_c)
+check_totals(completed_dfs, spec_c, totals_c, "Main")
+
+# BMI
+completed_dfs <- lapply(completed_dfs, function(df) {
+  df %>% mutate(
+    height_c_1 = to_numeric_safe(height_c_1, "height_c_1"),
+    weight_c_1 = to_numeric_safe(weight_c_1, "weight_c_1"),
+    height_m   = height_c_1 / 100,
+    bmi        = weight_c_1 / (height_m^2)
+  )
+})
+
+# Pubertal timing
+completed_dfs <- add_timing(completed_dfs, "pds_total", "age_cont", "pubertal_timing")
+
+# BMI plausibility across all imputations
+bmi_check <- purrr::imap_dfr(completed_dfs, function(df, i) {
+  tibble(
+    imp = i,
+    bmi_min = min(df$bmi, na.rm = TRUE),
+    bmi_max = max(df$bmi, na.rm = TRUE),
+    n_bmi_implausible = sum(df$bmi < 10 | df$bmi > 60, na.rm = TRUE)
+  )
+})
+print(bmi_check)
+stopifnot(all(bmi_check$n_bmi_implausible == 0))
+
+check_derived(completed_dfs,
+              c("pds_total", "ers_total", "smfq_total", "swan_total", "bmi", "pubertal_timing"),
+              "Main")
+
+#------------------
+# Young person data
+#------------------
+check_item_ranges(completed_dfs_y, spec_y, "YP")
+completed_dfs_y <- add_totals(completed_dfs_y, spec_y, totals_y)
+check_totals(completed_dfs_y, spec_y, totals_y, "YP")
+
+completed_dfs_y <- add_timing(completed_dfs_y, "pds_total_y", "age_cont_y", "pubertal_timing_y")
+
+check_derived(completed_dfs_y,
+              c("pds_total_y", "ers_total_y", "smfq_total_y", "pubertal_timing_y"),
+              "YP")
+```
+
+### 1.3 Standardisation main data
+
+```{r standardise}
+continuous_vars <- c(
+  "age_cont",
+  "sed_percentile",
+  "bmi",
+  "pds_total",
+  "pubertal_timing",
+  "menarche_timing",
+  "smfq_total",
+  "swan_total",
+  "ers_total"
+)
+
+completed_dfs <- lapply(completed_dfs, function(df) {
+  for (v in continuous_vars) {
+    if (v %in% names(df)) {
+      sd_v <- sd(df[[v]], na.rm = TRUE)
+      mean_v <- mean(df[[v]], na.rm = TRUE)
+      df[[paste0(v, "_s")]] <- (df[[v]] - mean_v) / (sd_v)
+    }
+  }
+  return(df)
+})
+
+# Spot checks
+summary(completed_dfs[[1]]$pds_total_s)
+mean(completed_dfs[[1]]$pds_total_s)
+sd(completed_dfs[[1]]$pds_total_s)
+```
+
+### 1.4 Standardisation young people
+
+```{r yp-standardise}
+continuous_vars_y <- c(
+  "age_cont_y",
+  "sed_percentile",
+  "pds_total_y",
+  "pubertal_timing_y",
+  "ers_total_y"
+)
+
+completed_dfs_y <- lapply(completed_dfs_y, function(df) {
+  for (v in continuous_vars_y) {
+    if (v %in% names(df)) {
+      sd_v <- sd(df[[v]], na.rm = TRUE)
+      mean_v <- mean(df[[v]], na.rm = TRUE)
+      df[[paste0(v, "_s")]] <- (df[[v]] - mean_v) / (sd_v)
+    }
+  }
+  return(df)
+})
+
+# Spot checks
+summary(completed_dfs_y[[1]]$pds_total_y_s)
+mean(completed_dfs_y[[1]]$pds_total_y_s)
+sd(completed_dfs_y[[1]]$pds_total_y_s)
+```
+
+## 2. Pre-analysis data checks
+
+### 2.1 Check all continuous variables are numeric
+
+```{r check-cont-numeric}
+#------------
+# Main data
+#------------
+derived_continuous_vars <- c(
+  "age_cont_s",
+  "sed_percentile_s",
+  "bmi_s",
+  "pds_total_s",
+  "pubertal_timing_s",
+  "menarche_timing_s",
+  "smfq_total_s",
+  "swan_total_s",
+  "ers_total_s"
+)
+
+# Check class of continuous variables in the first imputed df
+sapply(completed_dfs[[1]][derived_continuous_vars], class)
+
+#-------------------
+# Young person data
+#-------------------
+derived_continuous_vars_y <- c(
+  "age_cont_y_s",
+  "sed_percentile_s",
+  "pds_total_y_s",
+  "pubertal_timing_y_s",
+  "ers_total_y_s"
+)
+
+# Check class of continuous variables in the first imputed df
+sapply(completed_dfs_y[[1]][derived_continuous_vars_y], class)
+```
+
+### 2.2 Histograms of continous variables
+
+```{r histograms}
+#-----------
+# Main data
+#-----------
+# Quick histograms for the first imputed df
+completed_dfs[[1]][derived_continuous_vars] %>%
+  as.data.frame() %>%
+  gather(key = "variable", value = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black") +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal()
+
+#-------------------
+# Young person data
+#-------------------
+# Quick histograms for the first imputed df
+completed_dfs_y[[1]][derived_continuous_vars_y] %>%
+  as.data.frame() %>%
+  gather(key = "variable", value = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "violet", color = "black") +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal()
+```
+
+### 2.3 Multicollinearity checks for continuous variables
+
+```{r multicollinearity}
+#------------
+# Main data
+#------------
+# Calculate correlation matrix
+cor_matrix <- cor(
+  completed_dfs[[1]][continuous_vars],
+  use = "pairwise.complete.obs",
+  method = "pearson"
+)
+
+# Visual correlation matrix
+corrplot(cor_matrix,
+         method = "color",
+         type = "upper",
+         tl.cex = 0.6, 
+         tl.col = "black",
+         diag = FALSE,
+         addCoef.col = "black",
+         number.cex = 0.4) 
+
+#-------------------
+# Young person data
+#-------------------
+# Calculate correlation matrix
+cor_matrix <- cor(
+  completed_dfs_y[[1]][continuous_vars_y],
+  use = "pairwise.complete.obs",
+  method = "pearson"
+)
+
+# Visual correlation matrix
+corrplot(cor_matrix,
+         method = "color",
+         type = "upper",
+         tl.cex = 0.6,
+         tl.col = "black",
+         diag = FALSE,
+         addCoef.col = "black",
+         number.cex = 0.4)
+
+#------------
+# Main data
+#------------
+predictors_h1 <- c(
+  "pds_total_s",
+  "adhd_status",
+  "age_cont_s",
+  "sed_percentile_s"
+)
+
+predictors_h2 <- c(
+  "pubertal_timing_s",
+  "adhd_status",
+  "sed_percentile_s"
+)
+
+
+# Calculate VIF/GVIF within each imputed dataset for H1
+cat("\n===VIF H1===\n")
+vif_results_h1 <- lapply(completed_dfs, function(df) {
+  
+  # Arbitrary numeric outcome required to fit the linear model
+  df$dummy_y <- rnorm(nrow(df))
+  
+  # Model containing predictors only
+  fit <- lm(
+    as.formula(
+      paste("dummy_y ~", paste(predictors_h1, collapse = " + "))
+    ),
+    data = df
+  )
+  
+  car::vif(fit)
+})
+
+names(vif_results_h1) <- paste0(
+  "Imputation_", seq_along(completed_dfs)
+)
+
+# View results for each imputation
+vif_results_h1
+
+
+cat("\n===VIF H2===\n")
+# Calculate VIF/GVIF within each imputed dataset for H2
+vif_results_h2 <- lapply(completed_dfs, function(df) {
+  
+  # Arbitrary numeric outcome required to fit the linear model
+  df$dummy_y <- rnorm(nrow(df))
+  
+  # Model containing predictors only
+  fit <- lm(
+    as.formula(
+      paste("dummy_y ~", paste(predictors_h2, collapse = " + "))
+    ),
+    data = df
+  )
+  
+  car::vif(fit)
+})
+
+names(vif_results_h2) <- paste0(
+  "Imputation_", seq_along(completed_dfs)
+)
+
+# View results for each imputation
+vif_results_h2
+
+#------------------
+# Young person data
+#------------------
+predictors_h1_y <- c(
+  "pds_total_y_s",
+  "adhd_y",
+  "age_cont_y_s",
+  "sed_percentile_s"
+)
+
+predictors_h2_y <- c(
+  "pubertal_timing_y_s",
+  "adhd_y",
+  "sed_percentile_s"
+)
+
+cat("\n===VIF H1 Young Person===\n")
+vif_results_h1_y <- lapply(completed_dfs_y, function(df) {
+  
+  df$dummy_y <- rnorm(nrow(df))
+  
+  # Model containing predictors only
+  fit <- lm(
+    as.formula(
+      paste("dummy_y ~", paste(predictors_h1_y, collapse = " + "))
+    ),
+    data = df
+  )
+  
+  car::vif(fit)
+})
+
+names(vif_results_h1_y) <- paste0(
+  "Imputation_", seq_along(completed_dfs_y)
+)
+
+# View results for each imputation
+vif_results_h1_y
+
+
+cat("\n===VIF H2 Young Person===\n")
+vif_results_h2_y <- lapply(completed_dfs_y, function(df) {
+  
+  df$dummy_y <- rnorm(nrow(df))
+  
+  # Model containing predictors only
+  fit <- lm(
+    as.formula(
+      paste("dummy_y ~", paste(predictors_h2_y, collapse = " + "))
+    ),
+    data = df
+  )
+  
+  car::vif(fit)
+})
+
+names(vif_results_h2_y) <- paste0(
+  "Imputation_", seq_along(completed_dfs_y)
+)
+
+# View results for each imputation
+vif_results_h2_y
+
+# Summary table
+
+var_labels <- c(
+  # caregiver
+  "pds_total_s"         = "Pubertal status",
+  "pubertal_timing_s"   = "Pubertal timing (standardised)",
+  "adhd_status"         = "ADHD status",
+  "age_cont_s"          = "Age (standardised)",
+  # young person
+  "pds_total_y_s"       = "Pubertal status",
+  "pubertal_timing_y_s" = "Pubertal timing (standardised)",
+  "adhd_y"              = "ADHD status",
+  "age_cont_y_s"        = "Age (standardised)",
+  # shared
+  "sed_percentile_s"    = "SED (standardised)"
+)
+
+tidy_vif <- function(v) {
+  if (is.matrix(v)) {
+    tibble(Variable = rownames(v), VIF = v[, "GVIF^(1/(2*Df))"]^2)
+  } else {
+    tibble(Variable = names(v), VIF = as.numeric(v))
+  }
+}
+
+summarise_vif <- function(vif_list, predictors, model_label) {
+  map_dfr(vif_list, tidy_vif, .id = "Imputation") %>%
+    group_by(Variable) %>%
+    summarise(Min = min(VIF), Max = max(VIF), .groups = "drop") %>%
+    mutate(order = match(Variable, predictors)) %>%
+    arrange(order) %>%
+    mutate(
+      Model    = model_label,
+      Variable = coalesce(unname(var_labels[Variable]), Variable)  # falls back to raw name
+    ) %>%
+    select(Model, Variable, Min, Max)
+}
+
+vif_table <- bind_rows(
+  summarise_vif(vif_results_h1,   predictors_h1,   "H1"),
+  summarise_vif(vif_results_h2,   predictors_h2,   "H2"),
+  summarise_vif(vif_results_h1_y, predictors_h1_y, "H1 – Young Person"),
+  summarise_vif(vif_results_h2_y, predictors_h2_y, "H2 – Young Person")
+) %>%
+  mutate(
+    `VIF Min` = sprintf("%.3f", Min),
+    `VIF Max` = sprintf("%.3f", Max)
+  ) %>%
+  select(Model, Variable, `VIF Min`, `VIF Max`)
+
+vif_table_display <- vif_table %>%
+  mutate(Model = if_else(Model == lag(Model, default = ""), "", Model))
+
+vif_table_display
+
+```
+
+## 3. Save modified imputed dfs list
+
+```{r save-imp-dfs}
+saveRDS(completed_dfs, here("Imputed Data", "analytic_dfs.rds"))
+saveRDS(completed_dfs_y, here("Imputed Data", "analytic_dfs_y.rds"))
+```
+
+
