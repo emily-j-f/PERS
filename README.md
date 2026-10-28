@@ -23,4 +23,4 @@ A [Data Dictionary](https://github.com/emily-j-f/PERS/tree/main/Data%20Dictionar
 
 PDF outputs from the R analyses, including multiple imputation diagnostics, can be found in the [R Output PDFs](https://github.com/emily-j-f/PERS/tree/main/R%20Output%20PDFs) folder. And the data collection tools (surveys) can be found in the [Survey PDFs](https://github.com/emily-j-f/PERS/tree/main/Survey%20PDFs) folder.
 
-
+<a href="https://doi.org/10.5281/zenodo.23718276"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.23718276.svg" alt="DOI"></a>
